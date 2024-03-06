@@ -409,91 +409,59 @@ class ClusterICs:
             )
         return new_parts
 
-    def create_dataset(self, domain_dimensions, box_size, left_edge=None, **kwargs):
-        """
-        Create an in-memory, uniformly gridded dataset in 3D using yt by
-        placing the clusters into a box. When adding multiple clusters,
-        per-volume quantities from each cluster such as density and
-        pressure are added, whereas per-mass quantities such as temperature
-        and velocity are mass-weighted.
+    def create_dataset(
+        self,
+        filename,
+        domain_dimensions=(512, 512, 512),
+        left_edge=None,
+        box_size=None,
+        overwrite=False,
+        chunksize=64,
+    ):
+        r"""
+        Generate a :py:mod:`yt` dataset grid for the :py:class:`model.ClusterModel` instance.
 
         Parameters
         ----------
-        domain_dimensions : 3-tuple of ints
-            The number of cells on a side for the domain.
-        box_size : float
-            The size of the box in kpc.
-        left_edge : array_like, optional
-            The minimum coordinate of the box in all three dimensions,
-            in kpc. Default: None, which means the left edge will
-            be [0, 0, 0].
-        """
-        from scipy.interpolate import InterpolatedUnivariateSpline
-        from yt.loaders import load_uniform_grid
+        filename: str
+            The filename at which to write the HDF5 formatted grid dataset. By default, this is ``None``, and a
+            temporary directory is generated which is deleted after runtime has concluded.
+        domain_dimensions: tuple, optional
+            Length 3 tuple of integers. Represents the number of cells to place on each of the axes of the
+            grid. By default, the grid is :math:`512^3` cells.
+        left_edge: tuple, optional
+            The left edge of the grid. By default, this is :math:`-r_{\mathrm{max}}` (for each entry), so as to contain the entire
+            model within the grid domain. In conjunction with ``box_size``, this serves to determine the geometry of the
+            output dataset.
+        box_size: tuple, optional
+            The size of each of the box axes. By default, these are each twice the maximum radius of the model to ensure that
+            the entire model is included in the dataset.
+        overwrite: bool, optional
+            If ``True``, the dataset creation process will attempt to overwrite an existing data file if necessary. Default is ``False``.
+        chunksize: int, optional
+            The maximum chunksize for subgrid operations. Lower values with increase the execution time but save memory. By default,
+            chunks contain no more that :math:`64^3` cells (``chunksize=64``).
 
-        if left_edge is None:
-            left_edge = np.zeros(3)
-        left_edge = np.array(left_edge)
-        bbox = [
-            [left_edge[0], left_edge[0] + box_size],
-            [left_edge[1], left_edge[1] + box_size],
-            [left_edge[2], left_edge[2] + box_size],
-        ]
-        x, y, z = np.mgrid[
-            bbox[0][0] : bbox[0][1] : domain_dimensions[0] * 1j,
-            bbox[1][0] : bbox[1][1] : domain_dimensions[1] * 1j,
-            bbox[2][0] : bbox[2][1] : domain_dimensions[2] * 1j,
-        ]
-        fields1 = [
-            "density",
-            "pressure",
-            "dark_matter_density" "stellar_density",
-            "gravitational_potential",
-        ]
-        fields2 = ["temperature"]
-        fields3 = ["velocity_x", "velocity_y", "velocity_z"]
-        units = {
-            "density": "Msun/kpc**3",
-            "pressure": "Msun/kpc/Myr**2",
-            "dark_matter_density": "Msun/kpc**3",
-            "stellar_density": "Msun/kpc**3",
-            "temperature": "K",
-            "gravitational_potential": "kpc**2/Myr**2",
-            "velocity_x": "kpc/Myr",
-            "velocity_y": "kpc/Myr",
-            "velocity_z": "kpc/Myr",
-            "magnetic_field_strength": "G",
-        }
-        fields = fields1 + fields2
-        data = {}
-        for i, profile in enumerate(self.profiles):
-            p = ClusterModel.from_h5_file(profile)
-            xx = x - self.center.d[i][0]
-            yy = y - self.center.d[i][1]
-            zz = z - self.center.d[i][2]
-            rr = np.sqrt(xx * xx + yy * yy + zz * zz)
-            fd = InterpolatedUnivariateSpline(p["radius"].d, p["density"].d)
-            for field in fields:
-                if field not in p:
-                    continue
-                if field not in data:
-                    data[field] = (np.zeros(domain_dimensions), units[field])
-                f = InterpolatedUnivariateSpline(p["radius"].d, p[field].d)
-                if field in fields1:
-                    data[field][0] += f(rr)
-                elif field in fields2:
-                    data[field][0] += f(rr) * fd(rr)
-            for field in fields3:
-                data[field][0] += self.velocity.d[i][0] * fd(rr)
-        if "density" in data:
-            for field in fields2 + fields3:
-                data[field][0] /= data["density"][0]
-        return load_uniform_grid(
-            data,
+        Returns
+        -------
+        yt_dataset
+        """
+        from data_structures import YTHDF5
+
+        if not left_edge:
+            left_edge = 3 * [-np.amax(self.r_max)]
+        if not box_size:
+            box_size = 2 * np.amax(self.r_max)
+
+        bbox = [le + box_size for le in left_edge]
+
+        ds_obj = YTHDF5.build(
+            filename,
             domain_dimensions,
-            length_unit="kpc",
-            bbox=bbox,
-            mass_unit="Msun",
-            time_unit="Myr",
-            **kwargs,
+            bbox,
+            chunksize=chunksize,
+            overwrite=overwrite,
         )
+        ds_obj.add_ICs(self)
+
+        return ds_obj.create_dataset()

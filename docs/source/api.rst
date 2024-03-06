@@ -14,5 +14,5 @@ API
     particles
     relations
     virial
-    correction
     codes
+    data_structures

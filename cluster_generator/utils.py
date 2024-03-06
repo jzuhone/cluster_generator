@@ -2,7 +2,6 @@
 Utility functions for basic functionality of the py:module:`cluster_generator` package.
 """
 import logging
-import multiprocessing
 import os
 import pathlib as pt
 import sys
@@ -119,121 +118,6 @@ mue = 1.0 / (X_H + 0.5 * (1.0 - X_H))
 
 # -- Utility functions -- #
 _truncator_function = lambda a, r, x: 1 / (1 + (x / r) ** a)
-
-
-class TimeoutException(Exception):
-    def __init__(self, msg="", func=None, max_time=None):
-        self.msg = f"{msg} -- {str(func)} -- max_time={max_time} s"
-
-
-def _daemon_process_runner(*args, **kwargs):
-    # Runs the function specified in the kwargs in a daemon process #
-
-    send_end = kwargs.pop("__send_end")
-    function = kwargs.pop("__function")
-
-    try:
-        result = function(*args, **kwargs)
-    except Exception as e:
-        send_end.send(e)
-        return
-
-    send_end.send(result)
-
-
-def time_limit(function, max_execution_time, *args, **kwargs):
-    """
-    Assert a maximal time limit on functions with potentially problematic / unbounded execution times.
-
-    .. warning::
-
-        This function launches a daemon process.
-
-    Parameters
-    ----------
-    function: callable
-        The function to run under the time limit.
-    max_execution_time: float
-        The maximum runtime in seconds.
-    args:
-        arguments to pass to the function.
-    kwargs: optional
-        keyword arguments to pass to the function.
-
-    """
-    import time
-
-    from tqdm import tqdm
-
-    recv_end, send_end = multiprocessing.Pipe(False)
-    kwargs["__send_end"] = send_end
-    kwargs["__function"] = function
-
-    tqdm_kwargs = {}
-    for key in ["desc"]:
-        if key in kwargs:
-            tqdm_kwargs[key] = kwargs.pop(key)
-
-    N = 1000
-
-    p = multiprocessing.Process(target=_daemon_process_runner, args=args, kwargs=kwargs)
-    p.start()
-
-    for _ in tqdm(
-        range(N),
-        **tqdm_kwargs,
-        bar_format="{desc}: {percentage:3.0f}%|{bar}| [{elapsed}<{remaining} - {postfix}]",
-        colour="green",
-        leave=False,
-    ):
-        time.sleep(max_execution_time / 1000)
-
-        if not p.is_alive():
-            p.join()
-            result = recv_end.recv()
-            break
-
-    if p.is_alive():
-        p.terminate()
-        p.join()
-        raise TimeoutException(
-            "Failed to complete process within time limit.",
-            func=function,
-            max_time=max_execution_time,
-        )
-    else:
-        p.join()
-        result = recv_end.recv()
-
-    if isinstance(result, Exception):
-        raise result
-    else:
-        return result
-
-
-def truncate_spline(f, r_t, a):
-    r"""
-    Takes the function ``f`` and returns a truncated equivalent of it, which becomes
-    .. math::
-    f'(x) = f(r_t) \left(\frac{x}{r_t}\right)**(r_t*df/dx(r_t)/f(r_t))
-    This preserves the slope and continuity of the function be yields a monotonic power law at large :math:`r`.
-    Parameters
-    ----------
-    f: InterpolatedUnivariateSpline
-        The function to truncate
-    r_t: float
-        The scale radius
-    a: float
-        Truncation rate. Higher values cause transition more quickly about :math:`r_t`.
-    Returns
-    -------
-    callable
-        The new function.
-    """
-    _gamma = r_t * f(r_t, 1) / f(r_t)  # This is the slope.
-    return lambda x, g=_gamma, a=a, r=r_t: f(x) * _truncator_function(a, r, x) + (
-        1 - _truncator_function(a, r, x)
-    ) * (f(r) * _truncator_function(-g, r, x))
 
 
 def integrate_mass(profile, rr):

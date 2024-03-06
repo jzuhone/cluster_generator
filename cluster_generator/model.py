@@ -252,7 +252,7 @@ class ClusterModel:
         """
         if os.path.exists(output_filename) and not overwrite:
             raise IOError(
-                f"Cannot create {output_filename}. It exists and " f"overwrite=False."
+                f"Cannot create {output_filename}. It exists and overwrite=False."
             )
         f = h5py.File(output_filename, "w")
         f.create_dataset("num_elements", data=self.num_elements)
@@ -879,6 +879,63 @@ class ClusterModel:
         r = self.fields["radius"].to_value("kpc")[::-1]
         d = self.fields["density"].to_value("Msun/kpc**3")[::-1]
         return unyt_quantity(np.interp(density, d, r), "kpc")
+
+    def create_dateset(
+        self,
+        filename,
+        domain_dimensions=(512, 512, 512),
+        left_edge=None,
+        box_size=None,
+        overwrite=False,
+        chunksize=64,
+    ):
+        r"""
+        Generate a :py:mod:`yt` dataset grid for the :py:class:`model.ClusterModel` instance.
+
+        Parameters
+        ----------
+        filename: str
+            The filename at which to write the HDF5 formatted grid dataset. By default, this is ``None``, and a
+            temporary directory is generated which is deleted after runtime has concluded.
+        domain_dimensions: tuple, optional
+            Length 3 tuple of integers. Represents the number of cells to place on each of the axes of the
+            grid. By default, the grid is :math:`512^3` cells.
+        left_edge: tuple, optional
+            The left edge of the grid. By default, this is :math:`-r_{\mathrm{max}}` (for each entry), so as to contain the entire
+            model within the grid domain. In conjunction with ``box_size``, this serves to determine the geometry of the
+            output dataset.
+        box_size: tuple, optional
+            The size of each of the box axes. By default, these are each twice the maximum radius of the model to ensure that
+            the entire model is included in the dataset.
+        overwrite: bool, optional
+            If ``True``, the dataset creation process will attempt to overwrite an existing data file if necessary. Default is ``False``.
+        chunksize: int, optional
+            The maximum chunksize for subgrid operations. Lower values with increase the execution time but save memory. By default,
+            chunks contain no more that :math:`64^3` cells (``chunksize=64``).
+
+        Returns
+        -------
+        yt_dataset
+        """
+        from data_structures import YTHDF5
+
+        if not left_edge:
+            left_edge = 3 * [np.amin(self["radius"].to_value("kpc"))]
+        if not box_size:
+            box_size = 2 * np.amax(self["radius"].to_value("kpc"))
+
+        bbox = [le + box_size for le in left_edge]
+
+        ds_obj = YTHDF5.build(
+            filename,
+            domain_dimensions,
+            bbox,
+            chunksize=chunksize,
+            overwrite=overwrite,
+        )
+        ds_obj.add_model(self, [0, 0, 0], [0, 0, 0])
+
+        return ds_obj.create_dataset()
 
 
 # This is only for backwards-compatibility
