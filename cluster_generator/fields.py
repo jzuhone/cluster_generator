@@ -150,9 +150,9 @@ class ClusterField:
         kx[kx > nx // 2] = kx[kx > nx // 2] - nx
         ky[ky > ny // 2] = ky[ky > ny // 2] - ny
         kz[kz > nz // 2] = kz[kz > nz // 2] - nz
-        kx *= 2.0 * np.pi / (nx * self.dx)
-        ky *= 2.0 * np.pi / (ny * self.dy)
-        kz *= 2.0 * np.pi / (nz * self.dz)
+        kx /= (nx * self.dx)
+        ky /= (ny * self.dy)
+        kz /= (nz * self.dz)
         self.kx = kx
         self.ky = ky
         self.kz = kz
@@ -404,6 +404,8 @@ class GaussianRandomField(ClusterField):
         sigma = compute_pspec(
             self.kx, self.ky, self.kz, self.k0, self.k1, self.alpha, self.ddims
         )
+        k0 = 1.0 / self.l_min
+        k1 = 1.0 / self.l_max
         return sigma
 
     def _generate_field(self, sigma=None):
