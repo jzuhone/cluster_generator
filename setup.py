@@ -5,6 +5,7 @@ import numpy as np
 from Cython.Build import cythonize
 from setuptools import setup
 
+# Define the Cython extension module
 cython_utils = Extension(
     "cluster_generator.opt.cython_utils",
     sources=["cluster_generator/opt/cython_utils.pyx"],
@@ -24,14 +25,14 @@ setup(
     name="cluster_generator",
     packages=["cluster_generator"],
     version="0.1.0",
-    description="Generating equilbrium models of galaxy clusters.",
+    description="Generating equilibrium models of galaxy clusters.",
     author="John ZuHone",
     author_email="jzuhone@gmail.com",
     url="https://github.com/jzuhone/cluster_generator",
     download_url="https://github.com/jzuhone/cluster_generator/tarball/0.1.0",
     install_requires=[
         "numpy<2",
-        "scipy",
+        "scipy>=1.11.4",
         "yt",
         "unyt",
         "cython",

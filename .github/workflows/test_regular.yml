@@ -1,0 +1,95 @@
+# =================================================== #
+# REGULAR TESTING ACTION                              #
+# ----------------------                              #
+# This action performs standard (fast) tests on every #
+# push to any remote branch.                          #
+#                                                     #
+# We use the generate_answers.yml action to grab test #
+# answers from artifacts on that workflow and then    #
+# unpack and test against them.                       #
+# =================================================== #
+name: Build and Test
+
+on:
+  push:
+    branches:
+      - '*'
+  workflow_dispatch:
+
+jobs:
+  # FETCHING
+  # ======================
+  fetch-and-use-answers:
+    runs-on: ${{ matrix.os }}  # Defines the operating systems on which the jobs will run
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]  # Specifies the operating systems to test on
+        python-version: ['3.9', '3.10', '3.11']  # Specifies the Python versions to test with
+
+    steps:
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Check out repository
+      uses: actions/checkout@v2
+
+    # BUILD TOOLS
+    # ====================
+    - name: Install build tools on Ubuntu
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential
+
+    - name: Install build tools on macOS
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew update
+        brew install gcc
+
+    # ENVIRONMENT CONSTRUCTION
+    # =========================
+    - name: Upgrade pip and install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install setuptools wheel
+        pip install -r requirements.txt
+
+    - name: Install Cython
+      run: pip install cython
+
+    - name: Build Cython extensions
+      run: python setup.py build_ext --inplace
+
+    - name: Install the package
+      run: pip install .
+
+    - name: Define CG_VERSION environment variable
+      run: echo "CG_VERSION=$(python -c 'import importlib.metadata; print(importlib.metadata.version("cluster_generator"))')" >> $GITHUB_ENV
+
+    # ARTIFACT MANAGEMENT
+    # =======================
+    - name: Download latest test answers artifact
+      uses: dawidd6/action-download-artifact@v2
+      with:
+        workflow: generate_answers.yml
+        name: answers-${{ github.ref_name }}-${{ matrix.python-version }}-${{ matrix.os }}-${{ env.CG_VERSION }}
+        path: ./answers/
+
+    - name: Unpack test answers
+      if: success()  # Only run if the previous step succeeds
+      run: |
+        mkdir -p ./answers
+        tar -xzf ./answers/cg_answers.tar.gz -C ./answers
+        ls ./answers
+
+    - name: Run tests using fetched answers
+      if: success()  # Only run if the previous step succeeds
+      run: |
+        pytest "./cluster_generator" --answer_dir='./answers' -m "not slow"
+      env:
+        PYTHON_VERSION: ${{ matrix.python-version }}
+        OS_NAME: ${{ matrix.os }}
+        CG_VERSION: ${{ env.CG_VERSION }}

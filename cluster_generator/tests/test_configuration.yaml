@@ -1,0 +1,21 @@
+# ================================================================== #
+# Testing configuration file for cluster_generator                   #
+#                                                                    #
+# This file maintains all of the settings for the cluster_generator  #
+# testing suite.                                                     #
+# ================================================================== #
+REMOTE:
+  # REMOTE SETTINGS:
+  # The remote settings are utilized only when fetching test answers from the remote
+  # answer bank.
+
+SETUP:
+  # SETUP SETTINGS:
+  # These settings dictate the way that pytest sets up its run.
+  RUN_BEFORE_ALL:
+    # Tests listed in RUN_BEFORE_ALL are run first before any other
+    # tests are run. They are run in the order they are specified here.
+    # This should be used when the output of a test is necessary for a later
+    # test to proceed. Each entry should be a 2-tuple, with the first entry being
+    # the module name and the second being the specific test name.
+    - ["cluster_generator.tests.test_models","test_model"] # builds the base model.

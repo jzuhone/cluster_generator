@@ -660,7 +660,9 @@ class ClusterModel:
         Find the value of a *field* in the profiles
         at radius *r*.
         """
-        return unyt_array(np.interp(r, self["radius"], self[field]), self[field].units)
+        return unyt_array(
+            np.interp(r, self["radius"].d, self[field].d), self[field].units
+        )
 
     def check_hse(self) -> ArrayLike:
         r"""

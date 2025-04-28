@@ -1,0 +1,85 @@
+# =================================================== #
+# ANSWER GENERATION ACTION                            #
+# --------------------------                          #
+# This action infrequently creates answers to the     #
+# unit tests in cluster_generator. In doing so, we    #
+# save the time of having to generate answers on all  #
+# actions.                                            #
+#                                                     #
+# We run this action every 60 days to ensure that the #
+# artifacts persist, we also generate them on every   #
+# release or when run manually from github.           #
+#                                                     #
+# =================================================== #
+name: Generate and Upload Test Answers
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 */60 * *'
+  release:
+    types: [published]
+
+jobs:
+  generate-answers:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: [ '3.9', '3.10', '3.11']
+
+    steps:
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Check out repository
+      uses: actions/checkout@v2
+
+    - name: Install build tools on Ubuntu
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential
+
+    - name: Install build tools on macOS
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew update
+        brew install gcc
+
+    - name: Upgrade pip and install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install setuptools wheel
+        pip install -r requirements.txt
+
+    - name: Install Cython
+      run: pip install cython
+
+    - name: Build Cython extensions
+      run: python setup.py build_ext --inplace
+
+    - name: Install the package
+      run: pip install .
+
+    - name: Define CG_VERSION environment variable
+      run: echo "CG_VERSION=$(python -c 'import importlib.metadata; print(importlib.metadata.version("cluster_generator"))')" >> $GITHUB_ENV
+
+    - name: Run tests to generate answers
+      run: |
+        mkdir -p ./answers
+        ls ./cluster_generator
+        pytest "./cluster_generator" --answer_dir='./answers' --answer_store --package
+      env:
+        PYTHON_VERSION: ${{ matrix.python-version }}
+        OS_NAME: ${{ matrix.os }}
+        CG_VERSION: ${{ env.CG_VERSION }}
+
+    - name: Upload test answers as artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: answers-${{ github.ref_name }}-${{ matrix.python-version }}-${{ matrix.os }}-${{ env.CG_VERSION }}
+        path: ./cg_answers.tar.gz
+        retention-days: 60

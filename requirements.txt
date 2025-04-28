@@ -1,0 +1,15 @@
+cython
+h5py
+ipykernel
+ipython
+ipywidgets
+jupyter
+matplotlib
+nbconvert
+numpy
+pytest
+ruamel.yaml
+scipy>=1.11.4
+tqdm
+unyt
+yt

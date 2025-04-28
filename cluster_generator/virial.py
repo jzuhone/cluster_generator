@@ -193,6 +193,8 @@ class VirialEquilibrium:
         fv2esc = vesc * self.f(psi)
         vesc = np.sqrt(vesc)
 
+        # Requires scipy >= 1.11.4 due to change in shape of the
+        # coef matrix. https://github.com/scipy/scipy/pull/18195
         velocity_sub = generate_velocities(
             psi,
             vesc,

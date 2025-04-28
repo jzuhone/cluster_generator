@@ -1,0 +1,57 @@
+# =================================================== #
+# DOCUMENTATION ACTION                                #
+# ----------------------                              #
+# Automatically generate the documentation any time   #
+# there is a push to the master branch.               #
+#                                                     #
+# This will ensure that there is live documentation   #
+# hosted on github which is always up-to-date with    #
+# master.                                             #
+# =================================================== #
+name: build-docs
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:  # Allows manual triggering of this workflow from the GitHub Actions interface
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ ubuntu-latest]
+        python-version: [ '3.11' ]
+
+    steps:
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+      python-version: ${{ matrix.python-version }}
+
+    - name: Check out repository
+      uses: actions/checkout@v2
+    - name: Install Cython
+      run: pip install cython
+
+    - name: Build Cython extensions
+      run: python setup.py build_ext --inplace
+
+    - name: Install the package
+      run: pip install .
+
+    - name: Define CG_VERSION environment variable
+      run: echo "CG_VERSION=$(python -c 'import importlib.metadata; print(importlib.metadata.version("cluster_generator"))')" >> $GITHUB_ENV
+
+    - name: run
+      run: |
+        sudo apt install pandoc
+        cd ./docs
+        make html
+
+    - name: Deploy
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./docs

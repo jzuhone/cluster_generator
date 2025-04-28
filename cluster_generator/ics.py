@@ -159,7 +159,12 @@ class ClusterICs:
                 ntp = 0
             self.num_particles["tracer"].append(ntp)
 
-    def _generate_particles(self, regenerate_particles=False, prng=None):
+    def _generate_particles(
+        self, output_directory=None, regenerate_particles=False, prng=None
+    ):
+        if output_directory is None:
+            output_directory = ""
+
         prng = parse_prng(prng)
         parts = []
         for i, pf in enumerate(self.profiles):
@@ -186,7 +191,7 @@ class ClusterICs:
                     )
                     p = p + tp
                 parts.append(p)
-                outfile = f"{self.basename}_{i}_particles.h5"
+                outfile = f"{output_directory}/{self.basename}_{i}_particles.h5"
                 p.write_particles(outfile, overwrite=True)
                 self.particle_files[i] = outfile
             else:
@@ -315,7 +320,9 @@ class ClusterICs:
             r_max_tracer=r_max_tracer,
         )
 
-    def setup_particle_ics(self, regenerate_particles=False, prng=None):
+    def setup_particle_ics(
+        self, output_directory=None, regenerate_particles=False, prng=None
+    ):
         r"""
         From a set of cluster models and their relative positions and
         velocities, set up initial conditions for use with SPH codes.
@@ -332,7 +339,9 @@ class ClusterICs:
         """
         profiles = [ClusterModel.from_h5_file(hf) for hf in self.profiles]
         parts = self._generate_particles(
-            regenerate_particles=regenerate_particles, prng=prng
+            output_directory=output_directory,
+            regenerate_particles=regenerate_particles,
+            prng=prng,
         )
         if self.num_halos == 1:
             all_parts = parts[0]
