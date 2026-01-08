@@ -13,3 +13,58 @@ markers = [
   "slow: mark a test as slow.",
   "highmem: mark a test as taking high memory."
 ]
+
+[tool.setuptools_scm]
+
+[tool.ruff]
+line-length = 110
+exclude = [
+    "doc",
+]
+
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "W",
+    "C4",   # flake8-comprehensions
+    "B",    # flake8-bugbear
+    "G",    # flake8-logging-format
+    "TCH",  # flake8-type-checking
+    "YTT",  # flake8-2020
+    "UP",   # pyupgrade
+    "I",    # isort
+    "NPY",  # numpy specific rules
+    "RUF031"# incorrectly-parenthesized-tuple-in-subscript
+]
+ignore = [
+    "E741",  # Do not use variables named 'I', 'O', or 'l'
+]
+
+[tool.ruff.lint.per-file-ignores]
+"test_*" = ["NPY002"]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+known-third-party = [
+  "IPython",
+  "numpy",
+  "sympy",
+  "matplotlib",
+  "unyt",
+  "git",
+  "yaml",
+  "dateutil",
+  "requests",
+  "coverage",
+  "pytest",
+  "astropy",
+  "scipy",
+  "pathlib",
+  "yt",
+]
+known-first-party = ["cluster_generator"]
+
+[tool.ruff.lint.extend-per-file-ignores]
+"__init__.py" = ["E402", "F401", "F403"]

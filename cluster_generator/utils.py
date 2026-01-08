@@ -4,17 +4,15 @@ Utility functions for basic functionality of the py:module:`cluster_generator` p
 
 import logging
 import os
-import pathlib as pt
 import sys
 
 import numpy as np
+import pathlib as pt
 import yaml
 from more_itertools import always_iterable
 from numpy.random import RandomState
 from scipy.integrate import quad
-from unyt import kpc
-from unyt import physical_constants as pc
-from unyt import unyt_array, unyt_quantity
+from unyt import kpc, physical_constants as pc, unyt_array, unyt_quantity
 
 try:
     from typing import Self  # noqa
@@ -51,18 +49,12 @@ try:
 except FileNotFoundError as er:
     raise FileNotFoundError(
         f"Couldn't find the configuration file! Is it at {_config_directory}? Error = {er.__repr__()}"
-    )
+    ) from er
 except yaml.YAMLError as er:
-    raise yaml.YAMLError(
-        f"The configuration file is corrupted! Error = {er.__repr__()}"
-    )
+    raise yaml.YAMLError(f"The configuration file is corrupted! Error = {er.__repr__()}") from er
 
 
-stream = (
-    sys.stdout
-    if cgparams["system"]["logging"]["main"]["stream"] in ["STDOUT", "stdout"]
-    else sys.stderr
-)
+stream = sys.stdout if cgparams["system"]["logging"]["main"]["stream"] in ["STDOUT", "stdout"] else sys.stderr
 cgLogger = logging.getLogger("cluster_generator")
 
 cg_sh = logging.StreamHandler(stream=stream)
@@ -80,9 +72,7 @@ mylog = cgLogger
 # -- Setting up the developer debugger -- #
 devLogger = logging.getLogger("development_logger")
 
-if cgparams["system"]["logging"]["developer"][
-    "enabled"
-]:  # --> We do want to use the development logger.
+if cgparams["system"]["logging"]["developer"]["enabled"]:  # --> We do want to use the development logger.
     # -- checking if the user has specified a directory -- #
     if cgparams["system"]["logging"]["developer"]["output_directory"] is not None:
         from datetime import datetime
@@ -95,9 +85,7 @@ if cgparams["system"]["logging"]["developer"][
         )
 
         # adding the formatter
-        dv_formatter = logging.Formatter(
-            cgparams["system"]["logging"]["main"]["format"]
-        )
+        dv_formatter = logging.Formatter(cgparams["system"]["logging"]["main"]["format"])
 
         dv_fh.setFormatter(dv_formatter)
         devLogger.addHandler(dv_fh)
@@ -106,7 +94,8 @@ if cgparams["system"]["logging"]["developer"][
 
     else:
         mylog.warning(
-            "User enabled development logger but did not specify output directory. Dev logger will not be used."
+            "User enabled development logger but did not specify output directory. "
+            "Dev logger will not be used."
         )
 else:
     devLogger.propagate = False
@@ -122,12 +111,16 @@ X_H = cgparams["physics"]["hydrogen_abundance"]
 mu = 1.0 / (2.0 * X_H + 0.75 * (1.0 - X_H))
 mue = 1.0 / (X_H + 0.5 * (1.0 - X_H))
 
+
 # -- Utility functions -- #
-_truncator_function = lambda a, r, x: 1 / (1 + (x / r) ** a)
+def _truncator_function(a, r, x):
+    return 1 / (1 + (x / r) ** a)
 
 
 def integrate_mass(profile, rr):
-    mass_int = lambda r: profile(r) * r * r
+    def mass_int(r):
+        return profile(r) * r * r
+
     mass = np.zeros(rr.shape)
     for i, r in enumerate(rr):
         mass[i] = 4.0 * np.pi * quad(mass_int, 0, r)[0]

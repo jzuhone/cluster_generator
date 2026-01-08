@@ -1,6 +1,7 @@
 """
 Testing module for the :py:mod:``data_structures`` module.
 """
+
 import os
 
 import pytest
@@ -41,9 +42,7 @@ class Test_YTHDF5:
             answer_dir,
         )
 
-    def _load_yt(
-        self, answer_dir: str, temp_dir: str
-    ) -> cluster_generator.frontend.ClusterGeneratorDataset:
+    def _load_yt(self, answer_dir: str, temp_dir: str) -> cluster_generator.frontend.ClusterGeneratorDataset:
         # Locating the model.
         # If we've run test_construction, then there should be one in the temp file; but otherwise, we should
         # look in the answer directory.

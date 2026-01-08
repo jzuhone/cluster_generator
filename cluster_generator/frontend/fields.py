@@ -14,10 +14,7 @@ mom_units = "code_mass/(code_length**2 * code_time)"
 
 def velocity_field(j):
     def _velocity(field, data):
-        return (
-            data["cluster_generator", f"momentum_density_{j}"]
-            / data["cluster_generator", "density"]
-        )
+        return data["cluster_generator", f"momentum_density_{j}"] / data["cluster_generator", "density"]
 
     return _velocity
 
@@ -96,9 +93,7 @@ class ClusterGeneratorFieldInfo(FieldInfoContainer):
         )
 
         def _specific_thermal_energy(field, data):
-            return (3 / 2) * (
-                data["cluster_generator", "pressure"] / data["cluster_generator", "rho"]
-            )
+            return (3 / 2) * (data["cluster_generator", "pressure"] / data["cluster_generator", "rho"])
 
         self.add_field(
             ("gas", "specific_thermal_energy"),
@@ -109,12 +104,7 @@ class ClusterGeneratorFieldInfo(FieldInfoContainer):
 
         # Add temperature field
         def _temperature(field, data):
-            return (
-                (data["gas", "pressure"] / data["gas", "density"])
-                * data.ds.mu
-                * mh
-                / kboltz
-            )
+            return (data["gas", "pressure"] / data["gas", "density"]) * data.ds.mu * mh / kboltz
 
         self.add_field(
             ("gas", "temperature"),

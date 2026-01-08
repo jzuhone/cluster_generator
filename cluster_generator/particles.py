@@ -1,10 +1,10 @@
 """Initial conditions and cluster model particle management module."""
 
 from collections import OrderedDict, defaultdict
-from pathlib import Path
 
 import h5py
 import numpy as np
+from pathlib import Path
 from scipy.interpolate import InterpolatedUnivariateSpline
 from unyt import uconcatenate, unyt_array
 
@@ -160,9 +160,7 @@ class ClusterParticles:
         ptypes = ensure_list(ptypes)
 
         for part in ptypes:
-            cidx = ((self[part, "particle_position"].d - center) ** 2).sum(
-                axis=1
-            ) <= rm2
+            cidx = ((self[part, "particle_position"].d - center) ** 2).sum(axis=1) <= rm2
             for field in self.field_names[part]:
                 self.fields[part, field] = self.fields[part, field][cidx]
         self._update_num_particles()
@@ -212,7 +210,10 @@ class ClusterParticles:
             self.fields["black_hole", "particle_velocity"] = vel
             self.fields["black_hole", "particle_mass"] = mass
         else:
-            uappend = lambda x, y: unyt_array(np.append(x, y, axis=0).v, x.units)
+
+            def uappend(x, y):
+                return unyt_array(np.append(x, y, axis=0).v, x.units)
+
             self.fields["black_hole", "particle_position"] = uappend(
                 self.fields["black_hole", "particle_position"], pos
             )
@@ -265,12 +266,8 @@ class ClusterParticles:
                     with h5py.File(filename, "r") as f:
                         fields[ptype, field] = f[ptype][field][:]
                 else:
-                    a = unyt_array.from_hdf5(
-                        filename, dataset_name=field, group_name=ptype
-                    )
-                    fields[ptype, field] = unyt_array(
-                        a.d.astype("float64"), str(a.units)
-                    ).in_base("galactic")
+                    a = unyt_array.from_hdf5(filename, dataset_name=field, group_name=ptype)
+                    fields[ptype, field] = unyt_array(a.d.astype("float64"), str(a.units)).in_base("galactic")
         return cls(ptypes, fields)
 
     @classmethod
@@ -321,9 +318,9 @@ class ClusterParticles:
                     else:
                         fd = gadget_field_map[field]
                         units = gadget_field_units[field]
-                        fields[my_ptype, fd] = unyt_array(
-                            g[field], units, dtype="float64"
-                        ).in_base("galactic")
+                        fields[my_ptype, fd] = unyt_array(g[field], units, dtype="float64").in_base(
+                            "galactic"
+                        )
             if "Masses" not in g:
                 n_ptype = g["ParticleIDs"].size
                 units = gadget_field_units["Masses"]
@@ -346,9 +343,7 @@ class ClusterParticles:
             Overwrite an existing file with the same name. Default False.
         """
         if Path(output_filename).exists() and not overwrite:
-            raise IOError(
-                f"Cannot create {output_filename}. It exists and overwrite=False."
-            )
+            raise OSError(f"Cannot create {output_filename}. It exists and overwrite=False.")
         with h5py.File(output_filename, "w") as f:
             for ptype in self.particle_types:
                 f.create_group(ptype)
@@ -358,16 +353,12 @@ class ClusterParticles:
                     g = f[field[0]]
                     g.create_dataset("particle_index", data=self.fields[field])
             else:
-                self.fields[field].write_hdf5(
-                    output_filename, dataset_name=field[1], group_name=field[0]
-                )
+                self.fields[field].write_hdf5(output_filename, dataset_name=field[1], group_name=field[0])
 
     def write_particles_to_h5(self, output_filename, overwrite=False):
         self.write_particles(output_filename, overwrite=overwrite)
 
-    def set_field(
-        self, ptype, name, value, units=None, add=False, passive_scalar=False
-    ):
+    def set_field(self, ptype, name, value, units=None, add=False, passive_scalar=False):
         """
         Add or update a particle field using a unyt_array.
         The array will be checked to make sure that it
@@ -406,9 +397,7 @@ class ClusterParticles:
                     self.fields[ptype, name] = value
             else:
                 if add:
-                    raise RuntimeError(
-                        f"Field ({ptype}, {name}) does not " f"exist and add=True!"
-                    )
+                    raise RuntimeError(f"Field ({ptype}, {name}) does not exist and add=True!")
                 else:
                     self.fields[ptype, name] = value
                 if passive_scalar and ptype == "gas":
@@ -416,9 +405,7 @@ class ClusterParticles:
             if units is not None:
                 self.fields[ptype, name].convert_to_units(units)
         else:
-            raise ValueError(
-                f"The length of the array needs to be {num_particles} particles!"
-            )
+            raise ValueError(f"The length of the array needs to be {num_particles} particles!")
 
     def add_offsets(self, r_ctr, v_ctr, ptypes=None):
         """
@@ -460,9 +447,7 @@ class ClusterParticles:
                 continue
             if field == "PassiveScalars":
                 if self.num_passive_scalars > 0:
-                    data = np.stack(
-                        [self[ptype, s].d for s in self.passive_scalars], axis=-1
-                    )
+                    data = np.stack([self[ptype, s].d for s in self.passive_scalars], axis=-1)
                     h5_group.create_dataset("PassiveScalars", data=data)
             else:
                 my_field = gadget_field_map[field]
@@ -472,9 +457,7 @@ class ClusterParticles:
                     data = fd[idxs].to(units).d.astype(dtype)
                     h5_group.create_dataset(field, data=data)
 
-    def write_to_gadget_file(
-        self, ic_filename, box_size, dtype="float32", overwrite=False, code=None
-    ):
+    def write_to_gadget_file(self, ic_filename, box_size, dtype="float32", overwrite=False, code=None):
         """
         Write the particles to a file in the HDF5 Gadget format
         which can be used as initial conditions for a simulation.
@@ -497,9 +480,7 @@ class ClusterParticles:
             to a specific frontend. Default: None
         """
         if Path(ic_filename).exists() and not overwrite:
-            raise IOError(
-                f"Cannot create {ic_filename}. It exists and " f"overwrite=False."
-            )
+            raise OSError(f"Cannot create {ic_filename}. It exists and overwrite=False.")
         num_particles = {}
         npart = 0
         mass_table = np.zeros(6)
@@ -584,9 +565,7 @@ class ClusterParticles:
         )
 
 
-def _sample_clusters(
-    particles, hses, center, velocity, radii=None, resample=False, passive_scalars=None
-):
+def _sample_clusters(particles, hses, center, velocity, radii=None, resample=False, passive_scalars=None):
     num_halos = len(hses)
     center = [ensure_ytarray(c, "kpc") for c in center]
     velocity = [ensure_ytarray(v, "kpc/Myr") for v in velocity]
@@ -639,9 +618,7 @@ def _sample_clusters(
     return particles
 
 
-def combine_two_clusters(
-    particles1, particles2, hse1, hse2, center1, center2, velocity1, velocity2
-):
+def combine_two_clusters(particles1, particles2, hse1, hse2, center1, center2, velocity1, velocity2):
     center1 = ensure_ytarray(center1, "kpc")
     center2 = ensure_ytarray(center2, "kpc")
     velocity1 = ensure_ytarray(velocity1, "kpc/Myr")
@@ -660,9 +637,7 @@ def combine_two_clusters(
     particles2.add_offsets(center2, velocity2, ptypes=ptypes2)
     particles = particles1 + particles2
     if "gas" in particles.particle_types:
-        particles = _sample_clusters(
-            particles, [hse1, hse2], [center1, center2], [velocity1, velocity2]
-        )
+        particles = _sample_clusters(particles, [hse1, hse2], [center1, center2], [velocity1, velocity2])
     return particles
 
 

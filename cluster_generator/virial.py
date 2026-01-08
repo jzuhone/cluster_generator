@@ -1,6 +1,7 @@
 """
 Module containing methods for particle virialization.
 """
+
 from collections import OrderedDict
 
 import numpy as np
@@ -44,7 +45,10 @@ class VirialEquilibrium:
         pden = self.model[f"{self.ptype}_density"][::-1]
         density_spline = InterpolatedUnivariateSpline(self.ee, pden)
         g = np.zeros(self.num_elements)
-        dgdp = lambda t, e: 2 * density_spline(e - t * t, 1)
+
+        def dgdp(t, e):
+            return 2 * density_spline(e - t * t, 1)
+
         pbar = tqdm(
             leave=True,
             total=self.num_elements,
@@ -94,13 +98,15 @@ class VirialEquilibrium:
         n = self.num_elements
         rho = np.zeros(n)
         pden = self.model[f"{self.ptype}_density"].d
-        rho_int = lambda e, psi: self.f(e) * np.sqrt(2 * (psi - e))
+
+        def rho_int(e, psi):
+            return self.f(e) * np.sqrt(2 * (psi - e))
+
         for i, e in enumerate(self.ee):
             rho[i] = 4.0 * np.pi * quad(rho_int, 0.0, e, args=(e,))[0]
         chk = (rho[::-1] - pden) / pden
         mylog.info(
-            "The maximum relative deviation of this profile from "
-            "virial equilibrium is %g",
+            "The maximum relative deviation of this profile from virial equilibrium is %g",
             np.abs(chk).max(),
         )
         return rho[::-1], chk
@@ -149,9 +155,7 @@ class VirialEquilibrium:
         key = {"dark_matter": "dm", "stellar": "star"}[self.ptype]
         density = f"{self.ptype}_density"
         mass = f"{self.ptype}_mass"
-        energy_spline = InterpolatedUnivariateSpline(
-            self.model["radius"].d, self.ee[::-1]
-        )
+        energy_spline = InterpolatedUnivariateSpline(self.model["radius"].d, self.ee[::-1])
 
         prng = parse_prng(prng)
 
@@ -220,9 +224,7 @@ class VirialEquilibrium:
             "kpc/Myr",
         ).T
 
-        fields[key, "particle_mass"] = unyt_array(
-            [mtot / num_particles] * num_particles, "Msun"
-        )
+        fields[key, "particle_mass"] = unyt_array([mtot / num_particles] * num_particles, "Msun")
 
         if compute_potential:
             if sub_sample > 1:

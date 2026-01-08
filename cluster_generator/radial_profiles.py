@@ -1,7 +1,5 @@
 import numpy as np
 
-_nfw_factor = lambda conc: 1.0 / (np.log(conc + 1.0) - conc / (1.0 + conc))
-
 
 class RadialProfile:
     def __init__(self, profile):
@@ -15,9 +13,14 @@ class RadialProfile:
 
     def _do_op(self, other, op):
         if hasattr(other, "profile"):
-            p = lambda r: op(self.profile(r), other.profile(r))
+
+            def p(r):
+                return op(self.profile(r), other.profile(r))
         else:
-            p = lambda r: op(self.profile(r), other)
+
+            def p(r):
+                return op(self.profile(r), r)
+
         return p
 
     def __add__(self, other):
@@ -32,7 +35,9 @@ class RadialProfile:
     __rmul__ = __mul__
 
     def __pow__(self, power):
-        p = lambda r: self.profile(r) ** power
+        def p(r):
+            return self.profile(r) ** power
+
         return RadialProfile(p)
 
     def add_core(self, r_core, alpha):
@@ -127,7 +132,10 @@ def constant_profile(const):
     const : float
         The value of the constant.
     """
-    p = lambda r: const
+
+    def p(r):
+        return const
+
     return RadialProfile(p)
 
 
@@ -148,7 +156,10 @@ def power_law_profile(A, r_s, alpha):
     alpha : float
         Power-law index of the profile.
     """
-    p = lambda r: A * (r / r_s) ** alpha
+
+    def p(r):
+        return A * (r / r_s) ** alpha
+
     return RadialProfile(p)
 
 
@@ -166,7 +177,10 @@ def beta_model_profile(rho_c, r_c, beta):
     beta : float
         The beta parameter.
     """
-    p = lambda r: rho_c * ((1 + (r / r_c) ** 2) ** (-1.5 * beta))
+
+    def p(r):
+        return rho_c * ((1 + (r / r_c) ** 2) ** (-1.5 * beta))
+
     return RadialProfile(p)
 
 
@@ -182,7 +196,10 @@ def hernquist_density_profile(M_0, a):
     a : float
         The scale radius in kpc.
     """
-    p = lambda r: M_0 / (2.0 * np.pi * a**3) / ((r / a) * (1.0 + r / a) ** 3)
+
+    def p(r):
+        return M_0 / (2.0 * np.pi * a**3) / ((r / a) * (1.0 + r / a) ** 3)
+
     return RadialProfile(p)
 
 
@@ -200,12 +217,10 @@ def cored_hernquist_density_profile(M_0, a, b):
     b : float
         The core radius in kpc.
     """
-    p = (
-        lambda r: M_0
-        * b
-        / (2.0 * np.pi * a**3)
-        / ((1.0 + b * r / a) * (1.0 + r / a) ** 3)
-    )
+
+    def p(r):
+        return M_0 * b / (2.0 * np.pi * a**3) / ((1.0 + b * r / a) * (1.0 + r / a) ** 3)
+
     return RadialProfile(p)
 
 
@@ -221,8 +236,15 @@ def hernquist_mass_profile(M_0, a):
     a : float
         The scale radius in kpc.
     """
-    p = lambda r: M_0 * r**2 / (r + a) ** 2
+
+    def p(r):
+        return M_0 * r**2 / (r + a) ** 2
+
     return RadialProfile(p)
+
+
+def _nfw_factor(conc):
+    return 1.0 / (np.log(conc + 1.0) - conc / (1.0 + conc))
 
 
 def convert_nfw_to_hernquist(M_200, r_200, conc):
@@ -258,7 +280,10 @@ def nfw_density_profile(rho_s, r_s):
     r_s : float
         The scale radius in kpc.
     """
-    p = lambda r: rho_s / ((r / r_s) * (1.0 + r / r_s) ** 2)
+
+    def p(r):
+        return rho_s / ((r / r_s) * (1.0 + r / r_s) ** 2)
+
     return RadialProfile(p)
 
 
@@ -443,9 +468,7 @@ def cored_snfw_density_profile(M, a, r_c):
 
     def _snfw(r):
         x = r / a
-        return (
-            3.0 * M * b / (16.0 * np.pi * a**3) / ((1.0 + b * x) * (1.0 + x) ** 2.5)
-        )
+        return 3.0 * M * b / (16.0 * np.pi * a**3) / ((1.0 + b * x) * (1.0 + x) ** 2.5)
 
     return RadialProfile(_snfw)
 
@@ -515,7 +538,8 @@ def cored_snfw_total_mass(mass, radius, a, r_c):
     return mass / mp(radius)
 
 
-_dn = lambda n: 3.0 * n - 1.0 / 3.0 + 8.0 / (1215.0 * n) + 184.0 / (229635.0 * n * n)
+def _dn(n):
+    return 3.0 * n - 1.0 / 3.0 + 8.0 / (1215.0 * n) + 184.0 / (229635.0 * n * n)
 
 
 def einasto_density_profile(M, r_s, n):
@@ -539,11 +563,11 @@ def einasto_density_profile(M, r_s, n):
     h = r_s / _dn(n) ** n
     rho_0 = M / (4.0 * np.pi * h**3 * n * gamma(3.0 * n))
 
-    def _einasto(r):
+    def p(r):
         s = r / h
         return rho_0 * np.exp(-(s**alpha))
 
-    return RadialProfile(_einasto)
+    return RadialProfile(p)
 
 
 def einasto_mass_profile(M, r_s, n):
@@ -566,11 +590,11 @@ def einasto_mass_profile(M, r_s, n):
     alpha = 1.0 / n
     h = r_s / _dn(n) ** n
 
-    def _einasto(r):
+    def p(r):
         s = r / h
         return M * (1.0 - gammaincc(3.0 * n, s**alpha))
 
-    return RadialProfile(_einasto)
+    return RadialProfile(p)
 
 
 def am06_density_profile(rho_0, a, a_c, c, n):
@@ -593,12 +617,10 @@ def am06_density_profile(rho_0, a, a_c, c, n):
     """
     alpha = -1.0 - n * (c - 1.0) / (c - a / a_c)
     beta = 1.0 - n * (1.0 - a / a_c) / (c - a / a_c)
-    p = (
-        lambda r: rho_0
-        * (1.0 + r / a_c)
-        * (1.0 + r / a_c / c) ** alpha
-        * (1.0 + r / a) ** beta
-    )
+
+    def p(r):
+        return rho_0 * (1.0 + r / a_c) * (1.0 + r / a_c / c) ** alpha * (1.0 + r / a) ** beta
+
     return RadialProfile(p)
 
 
@@ -628,13 +650,16 @@ def vikhlinin_density_profile(rho_0, r_c, r_s, alpha, beta, epsilon, gamma=None)
     """
     if gamma is None:
         gamma = 3.0
-    profile = (
-        lambda r: rho_0
-        * (r / r_c) ** (-0.5 * alpha)
-        * (1.0 + (r / r_c) ** 2) ** (-1.5 * beta + 0.25 * alpha)
-        * (1.0 + (r / r_s) ** gamma) ** (-0.5 * epsilon / gamma)
-    )
-    return RadialProfile(profile)
+
+    def p(r):
+        return (
+            rho_0
+            * (r / r_c) ** (-0.5 * alpha)
+            * (1.0 + (r / r_c) ** 2) ** (-1.5 * beta + 0.25 * alpha)
+            * (1.0 + (r / r_s) ** gamma) ** (-0.5 * epsilon / gamma)
+        )
+
+    return RadialProfile(p)
 
 
 def vikhlinin_temperature_profile(T_0, a, b, c, r_t, T_min, r_cool, a_cool):
@@ -663,12 +688,12 @@ def vikhlinin_temperature_profile(T_0, a, b, c, r_t, T_min, r_cool, a_cool):
         The logarithmic slope in the cooling region.
     """
 
-    def _temp(r):
+    def p(r):
         x = (r / r_cool) ** a_cool
         t = (r / r_t) ** (-a) / ((1.0 + (r / r_t) ** b) ** (c / b))
         return T_0 * t * (x + T_min / T_0) / (x + 1)
 
-    return RadialProfile(_temp)
+    return RadialProfile(p)
 
 
 def am06_temperature_profile(T_0, a, a_c, c):
@@ -688,7 +713,10 @@ def am06_temperature_profile(T_0, a, a_c, c):
     c : float
         The scale of the temperature drop of the cool core.
     """
-    p = lambda r: T_0 / (1.0 + r / a) * (c + r / a_c) / (1.0 + r / a_c)
+
+    def p(r):
+        return T_0 / (1.0 + r / a) * (c + r / a_c) / (1.0 + r / a_c)
+
     return RadialProfile(p)
 
 
@@ -708,7 +736,10 @@ def baseline_entropy_profile(K_0, K_200, r_200, alpha):
     alpha : float
         The logarithmic slope of the profile.
     """
-    p = lambda r: K_0 + K_200 * (r / r_200) ** alpha
+
+    def p(r):
+        return K_0 + K_200 * (r / r_200) ** alpha
+
     return RadialProfile(p)
 
 
@@ -757,7 +788,9 @@ def rescale_profile_by_mass(profile, mass, radius):
     """
     from scipy.integrate import quad
 
-    mass_int = lambda r: profile(r) * r * r
+    def mass_int(r):
+        return profile(r) * r * r
+
     rescale = mass / (4.0 * np.pi * quad(mass_int, 0.0, radius)[0])
     return rescale * profile
 
@@ -812,6 +845,9 @@ def find_radius_mass(m_r, delta, z=0.0, cosmo=None):
     if cosmo is None:
         cosmo = Cosmology()
     rho_crit = cosmo.critical_density(z).to_value("Msun/kpc**3")
-    f = lambda r: 3.0 * m_r(r) / (4.0 * np.pi * r**3) - delta * rho_crit
+
+    def f(r):
+        return 3.0 * m_r(r) / (4.0 * np.pi * r**3) - delta * rho_crit
+
     r_delta = bisect(f, 0.01, 10000.0)
     return r_delta, m_r(r_delta)

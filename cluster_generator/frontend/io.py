@@ -61,9 +61,7 @@ class ClusterGeneratorIOHandler(BaseIOHandler):
         # -- Setup field iteration -- #
         returned_fields = {}
         for field in fields:
-            returned_fields[field] = np.empty(
-                size, dtype="=f8"
-            )  # allocate empty grid with correct sizes.
+            returned_fields[field] = np.empty(size, dtype="=f8")  # allocate empty grid with correct sizes.
 
         # -- Iterating over the fields -- #
         for field in fields:
@@ -78,9 +76,7 @@ class ClusterGeneratorIOHandler(BaseIOHandler):
                     end = gs[-1].id - gs[-1]._id_offset + 1
                     data = ds[start:end, :, :, :].transpose()
                     for i, g in enumerate(gs):
-                        ind += g.select(
-                            selector, data[..., i], returned_fields[field], ind
-                        )
+                        ind += g.select(selector, data[..., i], returned_fields[field], ind)
         return returned_fields
 
     def _read_chunk_data(self, chunk, fields):

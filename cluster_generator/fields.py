@@ -18,9 +18,12 @@ def parse_value(value, default_units):
     Parameters
     ----------
     value : array-like or tuple
-        The array from which to convert values to correct units. If ``value`` is a ``unyt_array``, the unit is simply converted,
-        if ``value`` is a tuple in the form ``(v_array,v_unit)``, the conversion will be made and will return an ``unyt_array``.
-        Finally, if ``value`` is an array, it is assumed that the ``default_units`` are correct.
+        The array from which to convert values to correct units.
+        If ``value`` is a ``unyt_array``, the unit is simply converted,
+        if ``value`` is a tuple in the form ``(v_array,v_unit)``,
+        the conversion will be made and will return an ``unyt_array``.
+        Finally, if ``value`` is an array, it is assumed that the
+        ``default_units`` are correct.
     default_units : str
         The default unit for the quantity.
     Returns
@@ -274,7 +277,7 @@ class ClusterField:
         if length_unit is None:
             length_unit = "kpc"
         if os.path.exists(filename) and not overwrite:
-            raise IOError(f"Cannot create {filename}. It exists and overwrite=False.")
+            raise OSError(f"Cannot create {filename}. It exists and overwrite=False.")
         all_comps = ["x", "y", "z"] + self.comps
         if format == "hdf5":
             write_class = h5py.File
@@ -333,9 +336,7 @@ class ClusterField:
                 fill_value=0.0,
             )
             v[:, i] = func(cluster_particles[ptype, "particle_position"].d)
-        cluster_particles.set_field(
-            ptype, self._name, unyt_array(v, self.units), units=units
-        )
+        cluster_particles.set_field(ptype, self._name, unyt_array(v, self.units), units=units)
 
 
 class GaussianRandomField(ClusterField):
@@ -365,7 +366,7 @@ class GaussianRandomField(ClusterField):
     ):
         prng = parse_prng(prng)
 
-        super(GaussianRandomField, self).__init__(
+        super().__init__(
             left_edge,
             right_edge,
             ddims,
@@ -416,77 +417,43 @@ class GaussianRandomField(ClusterField):
 
         v = np.exp(2.0 * np.pi * 1j * prng.random((3, nx, ny, nz)))
 
-        v[:, 0, 0, 0] = (
-            2.0 * np.sign((v[:, 0, 0, 0].imag < 0.0).astype("int")) - 1.0 + 0j
-        )
+        v[:, 0, 0, 0] = 2.0 * np.sign((v[:, 0, 0, 0].imag < 0.0).astype("int")) - 1.0 + 0j
         v[:, nx // 2, ny // 2, nz // 2] = (
-            2.0 * np.sign((v[:, nx // 2, ny // 2, nz // 2].imag < 0.0).astype("int"))
-            - 1.0
-            + 0j
+            2.0 * np.sign((v[:, nx // 2, ny // 2, nz // 2].imag < 0.0).astype("int")) - 1.0 + 0j
         )
         v[:, 0, ny // 2, nz // 2] = (
-            2.0 * np.sign((v[:, 0, ny // 2, nz // 2].imag < 0.0).astype("int"))
-            - 1.0
-            + 0j
+            2.0 * np.sign((v[:, 0, ny // 2, nz // 2].imag < 0.0).astype("int")) - 1.0 + 0j
         )
         v[:, nx // 2, 0, nz // 2] = (
-            2.0 * np.sign((v[:, nx // 2, 0, nz // 2].imag < 0.0).astype("int"))
-            - 1.0
-            + 0j
+            2.0 * np.sign((v[:, nx // 2, 0, nz // 2].imag < 0.0).astype("int")) - 1.0 + 0j
         )
         v[:, nx // 2, ny // 2, 0] = (
-            2.0 * np.sign((v[:, nx // 2, ny // 2, 0].imag < np.pi).astype("int"))
-            - 1.0
-            + 0j
+            2.0 * np.sign((v[:, nx // 2, ny // 2, 0].imag < np.pi).astype("int")) - 1.0 + 0j
         )
-        v[:, 0, 0, nz // 2] = (
-            2.0 * np.sign((v[:, 0, 0, nz // 2].imag < np.pi).astype("int")) - 1.0 + 0j
-        )
-        v[:, 0, ny // 2, 0] = (
-            2.0 * np.sign((v[:, 0, ny // 2, 0].imag < np.pi).astype("int")) - 1.0 + 0j
-        )
-        v[:, nx // 2, 0, 0] = (
-            2.0 * np.sign((v[:, nx // 2, 0, 0].imag < np.pi).astype("int")) - 1.0 + 0j
-        )
+        v[:, 0, 0, nz // 2] = 2.0 * np.sign((v[:, 0, 0, nz // 2].imag < np.pi).astype("int")) - 1.0 + 0j
+        v[:, 0, ny // 2, 0] = 2.0 * np.sign((v[:, 0, ny // 2, 0].imag < np.pi).astype("int")) - 1.0 + 0j
+        v[:, nx // 2, 0, 0] = 2.0 * np.sign((v[:, nx // 2, 0, 0].imag < np.pi).astype("int")) - 1.0 + 0j
 
         np.multiply(v, np.sqrt(-2.0 * np.log(prng.random((3, nx, ny, nz)))), v)
 
         kx, ky, kz = self._compute_waves()
         kk = np.sqrt(kx**2 + ky**2 + kz**2)
         with np.errstate(invalid="ignore", divide="ignore"):
-            sigma = (1.0 + (kk / k1) ** 2) ** (0.25 * alpha) * np.exp(
-                -0.5 * (kk / k0) ** 2
-            )
+            sigma = (1.0 + (kk / k1) ** 2) ** (0.25 * alpha) * np.exp(-0.5 * (kk / k0) ** 2)
         np.nan_to_num(sigma, posinf=0, neginf=0, copy=False)
         del kk
 
         v[:, nx - 1 : 0 : -1, ny - 1 : 0 : -1, nz - 1 : nz // 2 : -1] = np.conjugate(
             v[:, 1:nx, 1:ny, 1 : nz // 2]
         )
-        v[:, nx - 1 : 0 : -1, ny - 1 : ny // 2 : -1, nz // 2] = np.conjugate(
-            v[:, 1:nx, 1 : ny // 2, nz // 2]
-        )
-        v[:, nx - 1 : 0 : -1, ny - 1 : ny // 2 : -1, 0] = np.conjugate(
-            v[:, 1:nx, 1 : ny // 2, 0]
-        )
-        v[:, nx - 1 : 0 : -1, 0, nz - 1 : nz // 2 : -1] = np.conjugate(
-            v[:, 1:nx, 0, 1 : nz // 2]
-        )
-        v[:, 0, ny - 1 : 0 : -1, nz - 1 : nz // 2 : -1] = np.conjugate(
-            v[:, 0, 1:ny, 1 : nz // 2]
-        )
-        v[:, nx - 1 : nx // 2 : -1, ny // 2, nz // 2] = np.conjugate(
-            v[:, 1 : nx // 2, ny // 2, nz // 2]
-        )
-        v[:, nx - 1 : nx // 2 : -1, ny // 2, 0] = np.conjugate(
-            v[:, 1 : nx // 2, ny // 2, 0]
-        )
-        v[:, nx - 1 : nx // 2 : -1, 0, nz // 2] = np.conjugate(
-            v[:, 1 : nx // 2, 0, nz // 2]
-        )
-        v[:, 0, ny - 1 : ny // 2 : -1, nz // 2] = np.conjugate(
-            v[:, 0, 1 : ny // 2, nz // 2]
-        )
+        v[:, nx - 1 : 0 : -1, ny - 1 : ny // 2 : -1, nz // 2] = np.conjugate(v[:, 1:nx, 1 : ny // 2, nz // 2])
+        v[:, nx - 1 : 0 : -1, ny - 1 : ny // 2 : -1, 0] = np.conjugate(v[:, 1:nx, 1 : ny // 2, 0])
+        v[:, nx - 1 : 0 : -1, 0, nz - 1 : nz // 2 : -1] = np.conjugate(v[:, 1:nx, 0, 1 : nz // 2])
+        v[:, 0, ny - 1 : 0 : -1, nz - 1 : nz // 2 : -1] = np.conjugate(v[:, 0, 1:ny, 1 : nz // 2])
+        v[:, nx - 1 : nx // 2 : -1, ny // 2, nz // 2] = np.conjugate(v[:, 1 : nx // 2, ny // 2, nz // 2])
+        v[:, nx - 1 : nx // 2 : -1, ny // 2, 0] = np.conjugate(v[:, 1 : nx // 2, ny // 2, 0])
+        v[:, nx - 1 : nx // 2 : -1, 0, nz // 2] = np.conjugate(v[:, 1 : nx // 2, 0, nz // 2])
+        v[:, 0, ny - 1 : ny // 2 : -1, nz // 2] = np.conjugate(v[:, 0, 1 : ny // 2, nz // 2])
         v[:, nx - 1 : nx // 2 : -1, 0, 0] = np.conjugate(v[:, 1 : nx // 2, 0, 0])
         v[:, 0, ny - 1 : ny // 2 : -1, 0] = np.conjugate(v[:, 0, 1 : ny // 2, 0])
         v[:, 0, 0, nz - 1 : nz // 2 : -1] = np.conjugate(v[:, 0, 0, 1 : nz // 2])
@@ -513,9 +480,7 @@ class GaussianRandomField(ClusterField):
         else:
             if num_halos >= 1:
                 mylog.info("Scaling the fields by cluster 1.")
-                rr1 = np.sqrt(
-                    (x - ctr1[0]) ** 2 + (y - ctr1[1]) ** 2 + (z - ctr1[2]) ** 2
-                )
+                rr1 = np.sqrt((x - ctr1[0]) ** 2 + (y - ctr1[1]) ** 2 + (z - ctr1[2]) ** 2)
                 if r_max is not None:
                     rr1[rr1 > r_max] = r_max
                 idxs1 = np.searchsorted(r1, rr1) - 1
@@ -524,9 +489,7 @@ class GaussianRandomField(ClusterField):
                 del idxs1, dr1, rr1
             if num_halos >= 2:
                 mylog.info("Scaling the fields by cluster 2.")
-                rr2 = np.sqrt(
-                    (x - ctr2[0]) ** 2 + (y - ctr2[1]) ** 2 + (z - ctr2[2]) ** 2
-                )
+                rr2 = np.sqrt((x - ctr2[0]) ** 2 + (y - ctr2[1]) ** 2 + (z - ctr2[2]) ** 2)
                 if r_max is not None:
                     rr2[rr2 > r_max] = r_max
                 idxs2 = np.searchsorted(r2, rr2) - 1
@@ -535,9 +498,7 @@ class GaussianRandomField(ClusterField):
                 del idxs2, dr2, rr2
             if num_halos == 3:
                 mylog.info("Scaling the fields by cluster 3.")
-                rr3 = np.sqrt(
-                    (x - ctr3[0]) ** 2 + (y - ctr3[1]) ** 2 + (z - ctr3[2]) ** 2
-                )
+                rr3 = np.sqrt((x - ctr3[0]) ** 2 + (y - ctr3[1]) ** 2 + (z - ctr3[2]) ** 2)
                 if r_max is not None:
                     rr3[rr3 > r_max] = r_max
                 idxs3 = np.searchsorted(r3, rr3) - 1
@@ -590,7 +551,7 @@ class RandomMagneticField(GaussianRandomField):
         alpha=-11.0 / 3.0,
         prng=None,
     ):
-        super(RandomMagneticField, self).__init__(
+        super().__init__(
             left_edge,
             right_edge,
             ddims,
@@ -632,16 +593,8 @@ class RadialRandomMagneticField(GaussianRandomField):
             r1 = profile1["radius"].to_value("kpc")
             B1 = profile1["magnetic_field_strength"]
         elif isinstance(profile1, str):
-            r1 = (
-                unyt_array.from_hdf5(
-                    profile1, dataset_name="radius", group_name="fields"
-                )
-                .to("kpc")
-                .d
-            )
-            B1 = unyt_array.from_hdf5(
-                profile1, dataset_name="magnetic_field_strength", group_name="fields"
-            )
+            r1 = unyt_array.from_hdf5(profile1, dataset_name="radius", group_name="fields").to("kpc").d
+            B1 = unyt_array.from_hdf5(profile1, dataset_name="magnetic_field_strength", group_name="fields")
         else:
             r1, B1 = profile1
         if profile2 is not None:
@@ -649,13 +602,7 @@ class RadialRandomMagneticField(GaussianRandomField):
                 r2 = profile2["radius"].to_value("kpc")
                 B2 = profile2["magnetic_field_strength"]
             elif isinstance(profile2, str):
-                r2 = (
-                    unyt_array.from_hdf5(
-                        profile2, dataset_name="radius", group_name="fields"
-                    )
-                    .to("kpc")
-                    .d
-                )
+                r2 = unyt_array.from_hdf5(profile2, dataset_name="radius", group_name="fields").to("kpc").d
                 B2 = unyt_array.from_hdf5(
                     profile2,
                     dataset_name="magnetic_field_strength",
@@ -671,13 +618,7 @@ class RadialRandomMagneticField(GaussianRandomField):
                 r3 = profile3["radius"].to_value("kpc")
                 B3 = profile3["magnetic_field_strength"]
             elif isinstance(profile3, str):
-                r3 = (
-                    unyt_array.from_hdf5(
-                        profile3, dataset_name="radius", group_name="fields"
-                    )
-                    .to("kpc")
-                    .d
-                )
+                r3 = unyt_array.from_hdf5(profile3, dataset_name="radius", group_name="fields").to("kpc").d
                 B3 = unyt_array.from_hdf5(
                     profile3,
                     dataset_name="magnetic_field_strength",
@@ -688,7 +629,7 @@ class RadialRandomMagneticField(GaussianRandomField):
         else:
             r3 = None
             B3 = None
-        super(RadialRandomMagneticField, self).__init__(
+        super().__init__(
             left_edge,
             right_edge,
             ddims,
@@ -739,7 +680,7 @@ class RandomVelocityField(GaussianRandomField):
         divergence_clean=False,
         prng=None,
     ):
-        super(RandomVelocityField, self).__init__(
+        super().__init__(
             left_edge,
             right_edge,
             ddims,
@@ -780,12 +721,8 @@ class RadialRandomVelocityField(GaussianRandomField):
             r1 = profile1["radius"].to_value("kpc")
             V1 = profile1["velocity_dispersion"]
         elif isinstance(profile1, str):
-            r1 = unyt_array.from_hdf5(
-                profile1, dataset_name="radius", group_name="fields"
-            ).d
-            V1 = unyt_array.from_hdf5(
-                profile1, dataset_name="velocity_dispersion", group_name="fields"
-            )
+            r1 = unyt_array.from_hdf5(profile1, dataset_name="radius", group_name="fields").d
+            V1 = unyt_array.from_hdf5(profile1, dataset_name="velocity_dispersion", group_name="fields")
         else:
             r1, V1 = profile1
         if profile2 is not None:
@@ -793,12 +730,8 @@ class RadialRandomVelocityField(GaussianRandomField):
                 r2 = profile2["radius"].to_value("kpc")
                 V2 = profile2["velocity_dispersion"]
             elif isinstance(profile2, str):
-                r2 = unyt_array.from_hdf5(
-                    profile2, dataset_name="radius", group_name="fields"
-                ).d
-                V2 = unyt_array.from_hdf5(
-                    profile2, dataset_name="velocity_dispersion", group_name="fields"
-                )
+                r2 = unyt_array.from_hdf5(profile2, dataset_name="radius", group_name="fields").d
+                V2 = unyt_array.from_hdf5(profile2, dataset_name="velocity_dispersion", group_name="fields")
             else:
                 r2, V2 = profile2
         else:
@@ -809,22 +742,14 @@ class RadialRandomVelocityField(GaussianRandomField):
                 r3 = profile3["radius"].to_value("kpc")
                 V3 = profile3["velocity_dispersion"]
             elif isinstance(profile3, str):
-                r3 = (
-                    unyt_array.from_hdf5(
-                        profile3, dataset_name="radius", group_name="fields"
-                    )
-                    .to("kpc")
-                    .d
-                )
-                V3 = unyt_array.from_hdf5(
-                    profile3, dataset_name="velocity_dispersion", group_name="fields"
-                )
+                r3 = unyt_array.from_hdf5(profile3, dataset_name="radius", group_name="fields").to("kpc").d
+                V3 = unyt_array.from_hdf5(profile3, dataset_name="velocity_dispersion", group_name="fields")
             else:
                 r3, V3 = profile3
         else:
             r3 = None
             V3 = None
-        super(RadialRandomVelocityField, self).__init__(
+        super().__init__(
             left_edge,
             right_edge,
             ddims,

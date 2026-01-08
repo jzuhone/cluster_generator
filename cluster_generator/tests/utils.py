@@ -1,9 +1,9 @@
 import os
-from pathlib import Path
 
 import h5py
 from numpy.random import RandomState
 from numpy.testing import assert_equal
+from pathlib import Path
 
 from cluster_generator.model import ClusterModel
 from cluster_generator.particles import ClusterParticles
@@ -102,40 +102,39 @@ def _h5_recursive_check(
     secondary_object: h5py.File | h5py.Group | h5py.Dataset,
 ):
     # Check that they are the same type
-    assert type(primary_object) is type(
-        secondary_object
-    ), f"{type(primary_object)} != {type(secondary_object)}"
+    assert type(primary_object) is type(secondary_object), (
+        f"{type(primary_object)} != {type(secondary_object)}"
+    )
 
     # -- Attribute checking -- #
-    assert all(
-        k in primary_object.attrs.keys() for k in secondary_object.attrs.keys()
-    ), f"Attribute keys of {primary_object} and {secondary_object} don't match."
+    assert all(k in primary_object.attrs.keys() for k in secondary_object.attrs.keys()), (
+        f"Attribute keys of {primary_object} and {secondary_object} don't match."
+    )
 
     for k in primary_object.attrs.keys():
-        assert (
-            primary_object.attrs[k] == secondary_object.attrs[k]
-        ), f"Attribute {k} of {primary_object} and {secondary_object} don't match."
+        assert primary_object.attrs[k] == secondary_object.attrs[k], (
+            f"Attribute {k} of {primary_object} and {secondary_object} don't match."
+        )
 
     # -- Dataset -- #
-    # If the object is a dataset, then we need to check the array equality and exit without passing through the
-    # rest of this function.
+    # If the object is a dataset, then we need to check the array equality and
+    # exit without passing through the rest of this function.
     if isinstance(primary_object, h5py.Dataset):
         assert_equal(primary_object[...], secondary_object[...])
         return
 
     # -- Groups or Files -- #
-    # In each case, we can simply check keys are equal again and then recursively check their sub-objects.
-    assert all(
-        k in primary_object.keys() for k in secondary_object.keys()
-    ), f"Keys of {primary_object} and {secondary_object} don't match."
+    # In each case, we can simply check keys are equal again and then recursively
+    # check their sub-objects.
+    assert all(k in primary_object.keys() for k in secondary_object.keys()), (
+        f"Keys of {primary_object} and {secondary_object} don't match."
+    )
 
     for key in primary_object.keys():
         _h5_recursive_check(primary_object[key], secondary_object[key])
 
 
-def model_answer_testing(
-    model: ClusterModel, filename: str, answer_store: bool, answer_dir: str
-):
+def model_answer_testing(model: ClusterModel, filename: str, answer_store: bool, answer_dir: str):
     """
     Test a new model against an old one and ensure that they have the same fields.
 
@@ -161,9 +160,7 @@ def model_answer_testing(
         assert_equal(old_model.star_virial.df, model.star_virial.df)
 
 
-def h5_answer_testing(
-    new_path: str, filename: str, answer_store: bool, answer_dir: str
-):
+def h5_answer_testing(new_path: str, filename: str, answer_store: bool, answer_dir: str):
     """
     Recursively test an HDF5 file against another.
 
@@ -191,9 +188,7 @@ def h5_answer_testing(
             _h5_recursive_check(nfio, ofio)
 
 
-def particle_answer_testing(
-    parts: ClusterParticles, filename: str, answer_store: bool, answer_dir: str
-):
+def particle_answer_testing(parts: ClusterParticles, filename: str, answer_store: bool, answer_dir: str):
     """
     Check equivalence of particle datasets.
 

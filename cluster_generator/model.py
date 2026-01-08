@@ -1,21 +1,23 @@
 """
 Module with tools for representing individual galaxy clusters.
 """
+
 import os
-import pathlib as pt
 from collections import OrderedDict
+from collections.abc import Callable, Collection
 from numbers import Number
-from pathlib import Path
-from typing import Any, Callable, Collection
+from typing import Any
 
 import h5py
 import numpy as np
+import pathlib as pt
 from numpy.random import RandomState
 from numpy.typing import ArrayLike, NDArray
+from pathlib import Path
 from scipy.integrate import (
     cumulative_trapezoid as cumtrapz,  # compliant with scipy 1.14.0+
+    quad,
 )
-from scipy.integrate import quad
 from scipy.interpolate import InterpolatedUnivariateSpline
 from unyt import unyt_array, unyt_quantity
 
@@ -54,11 +56,12 @@ class ClusterModel:
     Notes
     -----
 
-    :py:class:`ClusterModel` instances effectively operate as fancy dictionaries: they each contain a set of **fields**,
-    (arrays representing a physical variable) which parameterizes the physics of the system. Models are generated from a
-    minimal set of original fields (those provided by :py:class:`cluster_generator.radial_profiles.RadialProfile` instances) which
-    are then used to derive the other necessary fields.
-
+    :py:class:`ClusterModel` instances effectively operate as fancy
+    dictionaries: they each contain a set of **fields**, (arrays
+    representing a physical variable) which parameterizes the physics
+    of the system. Models are generated from a minimal set of original
+    fields (those provided by RadialProfile instances) which are then
+    used to derive the other necessary fields.
     """
 
     default_fields: list[str] = [
@@ -81,8 +84,8 @@ class ClusterModel:
 
     def __init__(self, num_elements: int, fields: dict[str, unyt_array]):
         """
-        Initializes the :py:class:`ClusterModel` class from a base set of fields and a specification of the number
-        of elements.
+        Initializes the :py:class:`ClusterModel` class from a base set of
+        fields and a specification of the number of elements.
 
         Parameters
         ----------
@@ -96,8 +99,10 @@ class ClusterModel:
 
         .. warning ::
 
-            Direct use of the ``__init__`` method is discouraged for :py:class:`ClusterModel` because the provided field
-            list may be incomplete and will not be filled in (as it would be using other initialization methods).
+            Direct use of the ``__init__`` method is discouraged for
+            ClusterModel because the provided field list may be incomplete
+            and will not be filled in (as it would be using other
+            initialization methods).
 
         """
         self.num_elements: int = num_elements
@@ -111,7 +116,8 @@ class ClusterModel:
     @property
     def dm_virial(self) -> VirialEquilibrium:
         """
-        The equilibrium model (:py:class:`cluster_generator.virial.VirialEquilibrium`) for the dark matter component of this model.
+        The equilibrium model (VirialEquilibrium) for the dark matter
+        component of this model.
         """
         if self._dm_virial is None:
             self._dm_virial = VirialEquilibrium(self, "dark_matter")
@@ -120,7 +126,8 @@ class ClusterModel:
     @property
     def star_virial(self) -> VirialEquilibrium:
         """
-        The equilibrium model (:py:class:`cluster_generator.virial.VirialEquilibrium`) for the stellar component of this model.
+        The equilibrium model (VirialEquilibrium`) for the stellar
+        component of this model.
         """
         if self._star_virial is None and "stellar_density" in self:
             self._star_virial = VirialEquilibrium(self, "stellar")
@@ -134,8 +141,9 @@ class ClusterModel:
         Parameters
         ----------
         fields : dict
-            The dictionary of fields. Each entry should have a field name as the key and an array as the value. The ``'radius'`` field
-            is required to be present.
+            The dictionary of fields. Each entry should have a field
+            name as the key and an array as the value. The ``"radius"``
+            field is required to be present.
 
         Returns
         -------
@@ -146,9 +154,7 @@ class ClusterModel:
         return cls(fields["radius"].size, fields)
 
     @classmethod
-    def from_h5_file(
-        cls, filename: str | Path, r_min: Number = None, r_max: Number = None
-    ) -> Self:
+    def from_h5_file(cls, filename: str | Path, r_min: Number = None, r_max: Number = None) -> Self:
         r"""
         Generate an equilibrium model from an HDF5 file.
 
@@ -195,16 +201,12 @@ class ClusterModel:
         model = cls(num_elements, fields)
 
         if get_dm_virial:
-            mask = np.logical_and(
-                fields["radius"].d >= r_min, fields["radius"].d <= r_max
-            )
+            mask = np.logical_and(fields["radius"].d >= r_min, fields["radius"].d <= r_max)
             df = unyt_array.from_hdf5(filename, dataset_name="dm_df")[mask]
             model._dm_virial = VirialEquilibrium(model, ptype="dark_matter", df=df)
 
         if get_star_virial:
-            mask = np.logical_and(
-                fields["radius"].d >= r_min, fields["radius"].d <= r_max
-            )
+            mask = np.logical_and(fields["radius"].d >= r_min, fields["radius"].d <= r_max)
             df = unyt_array.from_hdf5(filename, dataset_name="star_df")[mask]
             model._star_virial = VirialEquilibrium(model, ptype="stellar", df=df)
 
@@ -219,7 +221,10 @@ class ClusterModel:
         rr = fields["radius"].d
         mylog.info("Integrating gravitational potential profile.")
         tdens_func = InterpolatedUnivariateSpline(rr, fields["total_density"].d)
-        gpot_profile = lambda r: tdens_func(r) * r
+
+        def gpot_profile(r):
+            return tdens_func(r) * r
+
         gpot1 = fields["total_mass"] / fields["radius"]
         gpot2 = unyt_array(4.0 * np.pi * integrate(gpot_profile, rr), "Msun/kpc")
         fields["gravitational_potential"] = -G * (gpot1 + gpot2)
@@ -229,17 +234,14 @@ class ClusterModel:
             mylog.info("Integrating gas mass profile.")
             m0 = fields["density"].d[0] * rr[0] ** 3 / 3.0
             fields["gas_mass"] = unyt_array(
-                4.0 * np.pi * cumtrapz(fields["density"] * rr * rr, x=rr, initial=0.0)
-                + m0,
+                4.0 * np.pi * cumtrapz(fields["density"] * rr * rr, x=rr, initial=0.0) + m0,
                 "Msun",
             )
 
         if stellar_density is not None:
             fields["stellar_density"] = unyt_array(stellar_density(rr), "Msun/kpc**3")
             mylog.info("Integrating stellar mass profile.")
-            fields["stellar_mass"] = unyt_array(
-                integrate_mass(stellar_density, rr), "Msun"
-            )
+            fields["stellar_mass"] = unyt_array(integrate_mass(stellar_density, rr), "Msun")
 
         mdm = fields["total_mass"].copy()
         ddm = fields["total_density"].copy()
@@ -259,12 +261,8 @@ class ClusterModel:
 
         if "density" in fields:
             fields["gas_fraction"] = fields["gas_mass"] / fields["total_mass"]
-            fields["electron_number_density"] = fields["density"].to(
-                "cm**-3", "number_density", mu=mue
-            )
-            fields["entropy"] = (
-                fields["temperature"] * fields["electron_number_density"] ** mtt
-            )
+            fields["electron_number_density"] = fields["density"].to("cm**-3", "number_density", mu=mue)
+            fields["entropy"] = fields["temperature"] * fields["electron_number_density"] ** mtt
 
         return cls(rr.size, fields)
 
@@ -288,9 +286,7 @@ class ClusterModel:
         for field in self.fields:
             fields[field] = self.fields[field][mask]
         num_elements = mask.sum()
-        return ClusterModel(
-            num_elements, fields, dm_virial=self.dm_virial, star_virial=self.star_virial
-        )
+        return ClusterModel(num_elements, fields, dm_virial=self.dm_virial, star_virial=self.star_virial)
 
     def __getitem__(self, key: str):
         return self.fields[key]
@@ -364,9 +360,7 @@ class ClusterModel:
             The maximum radius.
         """
         if os.path.exists(output_filename) and not overwrite:
-            raise IOError(
-                f"Cannot create {output_filename}. It exists and overwrite=False."
-            )
+            raise OSError(f"Cannot create {output_filename}. It exists and overwrite=False.")
         f = h5py.File(output_filename, "w")
         f.create_dataset("num_elements", data=self.num_elements)
         f.attrs["unit_system"] = "cgs" if in_cgs else "galactic"
@@ -375,9 +369,7 @@ class ClusterModel:
             r_min = 0.0
         if r_max is None:
             r_max = self.fields["radius"][-1].d * 2
-        mask = np.logical_and(
-            self.fields["radius"].d >= r_min, self.fields["radius"].d <= r_max
-        )
+        mask = np.logical_and(self.fields["radius"].d >= r_min, self.fields["radius"].d <= r_max)
         for k, v in self.fields.items():
             if in_cgs:
                 if k == "temperature":
@@ -428,16 +420,12 @@ class ClusterModel:
         from scipy.io import FortranFile
 
         if os.path.exists(output_filename) and not overwrite:
-            raise IOError(
-                f"Cannot create {output_filename}. It exists and " f"overwrite=False."
-            )
+            raise OSError(f"Cannot create {output_filename}. It exists and overwrite=False.")
         if r_min is None:
             r_min = 0.0
         if r_max is None:
             r_max = self.fields["radius"][-1].d * 2
-        mask = np.logical_and(
-            self.fields["radius"].d >= r_min, self.fields["radius"].d <= r_max
-        )
+        mask = np.logical_and(self.fields["radius"].d >= r_min, self.fields["radius"].d <= r_max)
         with FortranFile(output_filename, "w") as f:
             f.write_record(self.fields["radius"][mask].size)
             prof_rec = []
@@ -464,12 +452,10 @@ class ClusterModel:
             raise TypeError("value needs to be an unyt_array")
         if value.size == self.num_elements:
             if name in self.fields:
-                mylog.warning("Overwriting field %s." % name)
+                mylog.warning("Overwriting field %s.", name)
             self.fields[name] = value
         else:
-            raise ValueError(
-                f"The length of the array needs to be " f"{self.num_elements} elements!"
-            )
+            raise ValueError(f"The length of the array needs to be {self.num_elements} elements!")
 
     @classmethod
     def from_dens_and_temp(
@@ -514,9 +500,7 @@ class ClusterModel:
         fields["gravitational_field"] = dPdr / fields["density"]
         fields["gravitational_field"].convert_to_units("kpc/Myr**2")
         fields["gas_mass"] = unyt_array(integrate_mass(density, rr), "Msun")
-        fields["total_mass"] = (
-            -fields["radius"] ** 2 * fields["gravitational_field"] / G
-        )
+        fields["total_mass"] = -(fields["radius"] ** 2) * fields["gravitational_field"] / G
         total_mass_spline = InterpolatedUnivariateSpline(rr, fields["total_mass"].v)
         dMdr = unyt_array(total_mass_spline(rr, nu=1), "Msun/kpc")
         fields["total_density"] = dMdr / (4.0 * np.pi * fields["radius"] ** 2)
@@ -600,16 +584,20 @@ class ClusterModel:
         mylog.info("Integrating total mass profile.")
         fields["total_mass"] = unyt_array(integrate_mass(total_density, rr), "Msun")
         fields["gas_mass"] = unyt_array(integrate_mass(density, rr), "Msun")
-        fields["gravitational_field"] = (
-            -G * fields["total_mass"] / (fields["radius"] ** 2)
-        )
+        fields["gravitational_field"] = -G * fields["total_mass"] / (fields["radius"] ** 2)
         fields["gravitational_field"].convert_to_units("kpc/Myr**2")
         g = fields["gravitational_field"].in_units("kpc/Myr**2").v
         g_r = InterpolatedUnivariateSpline(rr, g)
-        dPdr_int = lambda r: density(r) * g_r(r)
+
+        def dPdr_int(r):
+            return density(r) * g_r(r)
+
         mylog.info("Integrating pressure profile.")
         P = -integrate(dPdr_int, rr)
-        dPdr_int2 = lambda r: density(r) * g[-1] * (rr[-1] / r) ** 2
+
+        def dPdr_int2(r):
+            return density(r) * g[-1] * (rr[-1] / r) ** 2
+
         P -= quad(dPdr_int2, rr[-1], np.inf, limit=100)[0]
         fields["pressure"] = unyt_array(P, "Msun/kpc/Myr**2")
         fields["temperature"] = fields["pressure"] * mu * mp / fields["density"]
@@ -648,9 +636,7 @@ class ClusterModel:
         fields["total_density"] = unyt_array(total_density(rr), "Msun/kpc**3")
         mylog.info("Integrating total mass profile.")
         fields["total_mass"] = unyt_array(integrate_mass(total_density, rr), "Msun")
-        fields["gravitational_field"] = (
-            -G * fields["total_mass"] / (fields["radius"] ** 2)
-        )
+        fields["gravitational_field"] = -G * fields["total_mass"] / (fields["radius"] ** 2)
         fields["gravitational_field"].convert_to_units("kpc/Myr**2")
 
         return cls._from_scratch(fields, stellar_density=stellar_density)
@@ -681,8 +667,7 @@ class ClusterModel:
         chk = dPdx - rhog
         chk /= rhog
         mylog.info(
-            "The maximum relative deviation of this profile from "
-            "hydrostatic equilibrium is %g",
+            "The maximum relative deviation of this profile from hydrostatic equilibrium is %g",
             np.abs(chk).max(),
         )
         return chk
@@ -912,13 +897,9 @@ class ClusterModel:
             energy = get_energy(radius)
 
         fields["gas", "thermal_energy"] = unyt_array(energy, "kpc**2/Myr**2")
-        fields["gas", "particle_mass"] = unyt_array(
-            [mtot / num_particles] * num_particles, "Msun"
-        )
+        fields["gas", "particle_mass"] = unyt_array([mtot / num_particles] * num_particles, "Msun")
 
-        get_density = InterpolatedUnivariateSpline(
-            self.fields["radius"], self.fields["density"]
-        )
+        get_density = InterpolatedUnivariateSpline(self.fields["radius"], self.fields["density"])
 
         if sub_sample > 1:
             density = np.tile(get_density(radius_sub), sub_sample)[:num_particles]
@@ -929,14 +910,10 @@ class ClusterModel:
 
         mylog.info("Set particle velocities to zero.")
 
-        fields["gas", "particle_velocity"] = unyt_array(
-            np.zeros((num_particles, 3)), "kpc/Myr"
-        )
+        fields["gas", "particle_velocity"] = unyt_array(np.zeros((num_particles, 3)), "kpc/Myr")
 
         if compute_potential:
-            energy_spline = InterpolatedUnivariateSpline(
-                self["radius"].d, -self["gravitational_potential"]
-            )
+            energy_spline = InterpolatedUnivariateSpline(self["radius"].d, -self["gravitational_potential"])
             phi = -energy_spline(radius_sub)
             if sub_sample > 1:
                 phi = np.tile(phi, sub_sample)
@@ -1120,34 +1097,50 @@ class ClusterModel:
         chunksize: int = 64,
     ) -> str | Path:
         r"""
-        Construct a ``yt`` dataset object from this model on a uniformly spaced grid.
+        Construct a ``yt`` dataset object from this model on a uniformly
+        spaced grid.
 
         Parameters
         ----------
         filename : str or :py:class:`pathlib.Path`
             The path at which to generate the underlying HDF5 datafile.
         domain_dimensions : Collection of int, optional
-            The size of the uniform grid along each axis of the domain. If specified, the argument must be an iterable type with
-            shape ``(3,)``. Each element should be an ``int`` specifying the number of grid cells to place along that axis. By default,
+            The size of the uniform grid along each axis of the domain.
+            If specified, the argument must be an iterable type with
+            shape ``(3,)``. Each element should be an ``int`` specifying
+            the number of grid cells to place along that axis. By default,
             the selected value is ``(512,512,512)``.
         left_edge : Collection of float or :py:class:`unyt.unyt_array`, optional
-            The left-most edge of the uniform grid's domain. In conjunction with ``box_size``, this attribute specifies the position of
-            the model in the box and the amount of the model which is actually written to the disk. If specified, ``left_edge`` should be a
-            length 3 iterable with each of the entries representing the minimum value of the respective axis. If elements of the iterable have units, or
-            the array is a :py:class:`unyt.unyt_array` instance, then the units will be interpreted automatically; otherwise, units are assumed to be
-            kpc. By default, the left edge is determined such that the resulting grid contains the full radial domain of the :py:class:`ClusterModel`.
+            The left-most edge of the uniform grid's domain. In conjunction
+            with ``box_size``, this attribute specifies the position of the
+            model in the box and the amount of the model which is actually
+            written to the disk. If specified, ``left_edge`` should be a
+            length 3 iterable with each of the entries representing the
+            minimum value of the respective axis. If elements of the iterable
+            have units, or the array is a :py:class:`unyt.unyt_array` instance,
+            then the units will be interpreted automatically; otherwise, units
+            are assumed to be kpc. By default, the left edge is determined such
+            that the resulting grid contains the full radial domain of the
+            :py:class:`ClusterModel`.
         box_size : Collection of float or :py:class:`unyt.unyt_array`, optional
-            The length of the grid along each of the physical axes. Along with ``left_edge``, this argument determines the positioning of the grid and
-            the model within it. If specified, ``box_size`` should be a length 3 iterable with each of the entries representing the length
-            of the grid along the respective axis. If elements of the iterable have units, or the array is a :py:class:`unyt.unyt_array` instance,
-             then the units will be interpreted automatically; otherwise, units are assumed to be kpc.
-            By default, the ``box_size`` is determined such that the resulting grid contains the full radial domain of the :py:class:`ClusterModel`.
+            The length of the grid along each of the physical axes. Along with
+            ``left_edge``, this argument determines the positioning of the grid
+            and the model within it. If specified, ``box_size`` should be a
+            length 3 iterable with each of the entries representing the length
+            of the grid along the respective axis. If elements of the iterable
+            have units, or the array is a :py:class:`unyt.unyt_array` instance,
+            then the units will be interpreted automatically; otherwise, units
+            are assumed to be kpc. By default, the ``box_size`` is determined
+            such that the resulting grid contains the full radial domain of the
+            :py:class:`ClusterModel`.
         overwrite : bool, optional
-            If ``False`` (default), the an error is raised if ``filename`` already exists. Otherwise, ``filename`` will be deleted and overwritten
+            If ``False`` (default), the error is raised if ``filename``
+            already exists. Otherwise, ``filename`` will be deleted and overwritten
             by this method.
         chunksize : int, optional
-            The maximum chunksize for subgrid operations. Lower values with increase the execution time but save memory. By default,
-            chunks contain no more that :math:`64^3` cells (``chunksize=64``).
+            The maximum chunksize for subgrid operations. Lower values with increase
+            the execution time but save memory. By default, chunks contain no more
+            that :math:`64^3` cells (``chunksize=64``).
 
         Returns
         -------
@@ -1157,29 +1150,32 @@ class ClusterModel:
         Notes
         -----
 
-        Generically, converting a :py:class:`ClusterModel` instance to a valid ``yt`` dataset occurs in two steps. In the first step,
-        the dataset is written to disk on a uniform grid (or, more generally, an AMR grid). From this grid, ``yt`` can then interpret the
-        data and construct a dataset from there.
+        Generically, converting a :py:class:`ClusterModel` instance to a valid
+        ``yt`` dataset occurs in two steps. In the first step, the dataset is
+        written to disk on a uniform grid (or, more generally, an AMR grid).
+        From this grid, ``yt`` can then interpret the data and construct a
+        dataset from there.
 
-        Because constructing the underlying grid is a memory intensive procedure, this method utilizes the HDF5 structure as an intermediary
-        (effectively using the disk for VRAM).
+        Because constructing the underlying grid is a memory intensive procedure,
+        this method utilizes the HDF5 structure as an intermediary (effectively
+        using the disk for VRAM).
 
         """
         from cluster_generator.data_structures import YTHDF5
 
-        # If the base parameters are not specified, then they need to be constructed from the dataset information.
+        # If the base parameters are not specified, then they need to be constructed
+        # from the dataset information.
         if left_edge is None:
             left_edge = unyt_array(3 * [-np.amax(self["radius"])])
         if box_size is None:
             box_size = unyt_array(3 * [2 * np.amax(self["radius"])])
 
         # Enforce unit conversions and then remove units and keep everything in kpc
-        left_edge, box_size = ensure_ytarray(left_edge, "kpc").to_value(
-            "kpc"
-        ), ensure_ytarray(box_size, "kpc").to_value("kpc")
-        bbox = np.array(
-            [[le, le + bs] for le, bs in zip(left_edge, box_size)], dtype="float"
+        left_edge, box_size = (
+            ensure_ytarray(left_edge, "kpc").to_value("kpc"),
+            ensure_ytarray(box_size, "kpc").to_value("kpc"),
         )
+        bbox = np.array([[le, le + bs] for le, bs in zip(left_edge, box_size, strict=True)], dtype="float")
 
         ds_obj = YTHDF5.build(
             filename,

@@ -1,8 +1,8 @@
 import os
-import pathlib as pt
 import weakref
 
 import numpy as np
+import pathlib as pt
 from yt.data_objects.index_subobjects.grid_patch import AMRGridPatch
 from yt.data_objects.static_output import Dataset
 from yt.geometry.grid_geometry_handler import GridIndex
@@ -65,7 +65,8 @@ class ClusterGeneratorHierarchy(GridIndex):
 
     def _count_grids(self):
         # Determine the number of grids in the dataset.
-        # For cluster_generator, this is just obtained from the size of the chunkmap dataset in the hdf5 file.
+        # For cluster_generator, this is just obtained from the size of the
+        # chunkmap dataset in the hdf5 file.
         self.num_grids = self.dataset.parameters["NGRID"]
 
     def _parse_index(self):
@@ -79,13 +80,15 @@ class ClusterGeneratorHierarchy(GridIndex):
         #   self.max_level = self.grid_levels.max()
         # ------------------------------------------------------------------
         # Notes:
-        # We require a grid divisible by the chunksize, so all grids are 1 cube-chunksize.
-        self.grid_dimensions = np.ones((self.num_grids, 3), dtype="int32") * (
-            self.dataset.parameters["chunksize"]
+        # We require a grid divisible by the chunksize, so all grids are 1
+        # cube-chunksize.
+        self.grid_dimensions = (
+            np.ones((self.num_grids, 3), dtype="int32") * (self.dataset.parameters["chunksize"])
         )
 
         # -- Determining the grid edges -- #
-        # The chunkmap provides the grid_id for the edges, but that still needs to be converted via the bounding box.
+        # The chunkmap provides the grid_id for the edges, but that still
+        # needs to be converted via the bounding box.
 
         # Determine the grid size from parameters
         _dd = self.dataset.parameters["domain_dimensions"]
@@ -118,7 +121,8 @@ class ClusterGeneratorHierarchy(GridIndex):
         # This must also set:
         #   g.Children <= list of child grids
         #   g.Parent   <= parent grid
-        # This is handled by the frontend because often the children must be identified.
+        # This is handled by the frontend because often the
+        # children must be identified.
         for g in self.grids:
             g._prepare_grid()
             g._setup_dx()
@@ -182,7 +186,7 @@ class ClusterGeneratorDataset(Dataset):
         self.omega_lambda = 0
         self.omega_matter = 0
         self.hubble_constant = 0
-        self._periodicity = tuple((True, True, True))
+        self._periodicity = (True,) * 3
         self.mu = self.parameters.get("mu", 1.2)  # mean molecular weight.
 
         # -- pulling the chunkmap information -- #

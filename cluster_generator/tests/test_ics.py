@@ -22,7 +22,7 @@ def test_single_ics(answer_dir: str, answer_store: bool, temp_dir: str):
     base_model_path = get_base_model_path(temp_dir)
 
     # Configure and generate the ICs
-    num_particles = {k: 100000 for k in ["dm", "star", "gas"]}
+    num_particles = dict.fromkeys(["dm", "star", "gas"], 100000)
     ics = ClusterICs(
         "single",
         1,
@@ -49,7 +49,7 @@ def test_double_ics(answer_dir: str, answer_store: bool, temp_dir: str):
     base_model_path = get_base_model_path(temp_dir)
 
     # Configure and generate the ICs
-    num_particles = {k: 200000 for k in ["dm", "star", "gas"]}
+    num_particles = dict.fromkeys(["dm", "star", "gas"], 200000)
     center1, center2 = compute_centers_for_binary([0.0, 0.0, 0.0], 3000.0, 500.0)
     velocity1 = [500.0, 0.0, 0.0]
     velocity2 = [-500.0, 0.0, 0.0]

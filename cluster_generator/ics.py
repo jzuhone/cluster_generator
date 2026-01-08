@@ -1,9 +1,9 @@
 import os
+from collections.abc import Collection
 from numbers import Number
-from pathlib import Path
-from typing import Collection
 
 import numpy as np
+from pathlib import Path
 from ruamel.yaml import YAML
 from unyt import unyt_array
 
@@ -131,30 +131,22 @@ class ClusterICs:
         self.num_particles = defaultdict(list)
         for i in range(self.num_halos):
             if self.tot_np.get("dm", 0) > 0:
-                ndp = np.rint(self.tot_np["dm"] * dm_masses[i] / tot_dm_mass).astype(
-                    "int"
-                )
+                ndp = np.rint(self.tot_np["dm"] * dm_masses[i] / tot_dm_mass).astype("int")
             else:
                 ndp = 0
             self.num_particles["dm"].append(ndp)
             if self.tot_np.get("gas", 0) > 0:
-                ngp = np.rint(self.tot_np["gas"] * gas_masses[i] / tot_gas_mass).astype(
-                    "int"
-                )
+                ngp = np.rint(self.tot_np["gas"] * gas_masses[i] / tot_gas_mass).astype("int")
             else:
                 ngp = 0
             self.num_particles["gas"].append(ngp)
             if self.tot_np.get("star", 0) > 0:
-                nsp = np.rint(
-                    self.tot_np["star"] * star_masses[i] / tot_star_mass
-                ).astype("int")
+                nsp = np.rint(self.tot_np["star"] * star_masses[i] / tot_star_mass).astype("int")
             else:
                 nsp = 0
             self.num_particles["star"].append(nsp)
             if self.tot_np.get("tracer", 0) > 0:
-                ntp = np.rint(
-                    self.tot_np["tracer"] * tracer_masses[i] / tot_tracer_mass
-                ).astype("int")
+                ntp = np.rint(self.tot_np["tracer"] * tracer_masses[i] / tot_tracer_mass).astype("int")
             else:
                 ntp = 0
             self.num_particles["tracer"].append(ntp)
@@ -165,9 +157,7 @@ class ClusterICs:
         for i, pf in enumerate(self.profiles):
             if regenerate_particles or self.particle_files[i] is None:
                 m = ClusterModel.from_h5_file(pf)
-                p = m.generate_dm_particles(
-                    self.num_particles["dm"][i], r_max=self.r_max[i], prng=prng
-                )
+                p = m.generate_dm_particles(self.num_particles["dm"][i], r_max=self.r_max[i], prng=prng)
                 if self.num_particles["star"][i] > 0:
                     sp = m.generate_star_particles(
                         self.num_particles["star"][i], r_max=self.r_max[i], prng=prng
@@ -222,9 +212,7 @@ class ClusterICs:
         out.yaml_add_eol_comment("velocity for cluster 1", key="velocity1")
         if self.particle_files[0] is not None:
             out["particle_file1"] = self.particle_files[0]
-            out.yaml_add_eol_comment(
-                "particle file for cluster 1", key="particle_file1"
-            )
+            out.yaml_add_eol_comment("particle file for cluster 1", key="particle_file1")
         if self.num_halos > 1:
             out["profile2"] = self.profiles[1]
             out.yaml_add_eol_comment("profile for cluster 2", key="profile2")
@@ -234,9 +222,7 @@ class ClusterICs:
             out.yaml_add_eol_comment("velocity for cluster 2", key="velocity2")
             if self.particle_files[1] is not None:
                 out["particle_file2"] = self.particle_files[1]
-                out.yaml_add_eol_comment(
-                    "particle file for cluster 2", key="particle_file2"
-                )
+                out.yaml_add_eol_comment("particle file for cluster 2", key="particle_file2")
         if self.num_halos == 3:
             out["profile3"] = self.profiles[2]
             out.yaml_add_eol_comment("profile for cluster 3", key="profile3")
@@ -246,9 +232,7 @@ class ClusterICs:
             out.yaml_add_eol_comment("velocity for cluster 3", key="velocity3")
             if self.particle_files[2] is not None:
                 out["particle_file3"] = self.particle_files[2]
-                out.yaml_add_eol_comment(
-                    "particle file for cluster 3", key="particle_file3"
-                )
+                out.yaml_add_eol_comment("particle file for cluster 3", key="particle_file3")
         if self.tot_np.get("dm", 0) > 0:
             out["num_dm_particles"] = self.tot_np["dm"]
             out.yaml_add_eol_comment("number of DM particles", key="num_dm_particles")
@@ -257,14 +241,10 @@ class ClusterICs:
             out.yaml_add_eol_comment("number of gas particles", key="num_gas_particles")
         if self.tot_np.get("star", 0) > 0:
             out["num_star_particles"] = self.tot_np["star"]
-            out.yaml_add_eol_comment(
-                "number of star particles", key="num_star_particles"
-            )
+            out.yaml_add_eol_comment("number of star particles", key="num_star_particles")
         if self.tot_np.get("tracer", 0) > 0:
             out["num_tracer_particles"] = self.tot_np["tracer"]
-            out.yaml_add_eol_comment(
-                "number of tracer particles", key="num_tracer_particles"
-            )
+            out.yaml_add_eol_comment("number of tracer particles", key="num_tracer_particles")
         if self.mag_file is not None:
             out["mag_file"] = self.mag_file
             out.yaml_add_eol_comment("3D magnetic field file", key="mag_file")
@@ -286,20 +266,16 @@ class ClusterICs:
         from ruamel.yaml import YAML
 
         yaml = YAML()
-        with open(filename, "r") as f:
+        with open(filename) as f:
             params = yaml.load(f)
         basename = params["basename"]
         num_halos = params["num_halos"]
         profiles = [params[f"profile{i}"] for i in range(1, num_halos + 1)]
         center = [np.array(params[f"center{i}"]) for i in range(1, num_halos + 1)]
         velocity = [np.array(params[f"velocity{i}"]) for i in range(1, num_halos + 1)]
-        num_particles = {
-            k: params.get(f"num_{k}_particles", 0) for k in ["gas", "dm", "star"]
-        }
+        num_particles = {k: params.get(f"num_{k}_particles", 0) for k in ["gas", "dm", "star"]}
         mag_file = params.get("mag_file", None)
-        particle_files = [
-            params.get(f"particle_file{i}", None) for i in range(1, num_halos + 1)
-        ]
+        particle_files = [params.get(f"particle_file{i}", None) for i in range(1, num_halos + 1)]
         r_max = params.get("r_max", 20000.0)
         r_max_tracer = params.get("r_max_tracer", r_max)
         return cls(
@@ -331,9 +307,7 @@ class ClusterICs:
         ----------
         """
         profiles = [ClusterModel.from_h5_file(hf) for hf in self.profiles]
-        parts = self._generate_particles(
-            regenerate_particles=regenerate_particles, prng=prng
-        )
+        parts = self._generate_particles(regenerate_particles=regenerate_particles, prng=prng)
         if self.num_halos == 1:
             all_parts = parts[0]
             all_parts.add_offsets(self.center[0], self.velocity[0])
@@ -433,27 +407,41 @@ class ClusterICs:
         filename : str or :py:class:`pathlib.Path`
             The path at which to generate the underlying HDF5 datafile.
         domain_dimensions : Collection of int, optional
-            The size of the uniform grid along each axis of the domain. If specified, the argument must be an iterable type with
-            shape ``(3,)``. Each element should be an ``int`` specifying the number of grid cells to place along that axis. By default,
+            The size of the uniform grid along each axis of the domain.
+            If specified, the argument must be an iterable type with
+            shape ``(3,)``. Each element should be an ``int`` specifying
+            the number of grid cells to place along that axis. By default,
             the selected value is ``(512,512,512)``.
         left_edge : Collection of float or :py:class:`unyt.unyt_array`, optional
-            The left-most edge of the uniform grid's domain. In conjunction with ``box_size``, this attribute specifies the position of
-            the model in the box and the amount of the model which is actually written to the disk. If specified, ``left_edge`` should be a
-            length 3 iterable with each of the entries representing the minimum value of the respective axis. If elements of the iterable have units, or
-            the array is a :py:class:`unyt.unyt_array` instance, then the units will be interpreted automatically; otherwise, units are assumed to be
-            kpc. By default, the left edge is determined such that the resulting grid contains the full radial domain of the :py:class:`ClusterModel`.
+            The left-most edge of the uniform grid's domain. In conjunction
+            with ``box_size``, this attribute specifies the position of
+            the model in the box and the amount of the model which is
+            actually written to the disk. If specified, ``left_edge`` should
+            be a length 3 iterable with each of the entries representing the
+            minimum value of the respective axis. If elements of the iterable
+            have units, or the array is a :py:class:`unyt.unyt_array` instance,
+            then the units will be interpreted automatically; otherwise, units
+            are assumed to be kpc. By default, the left edge is determined such
+            that the resulting grid contains the full radial domain of the
+            :py:class:`ClusterModel`.
         box_size : Collection of float or :py:class:`unyt.unyt_array`, optional
-            The length of the grid along each of the physical axes. Along with ``left_edge``, this argument determines the positioning of the grid and
-            the model within it. If specified, ``box_size`` should be a length 3 iterable with each of the entries representing the length
-            of the grid along the respective axis. If elements of the iterable have units, or the array is a :py:class:`unyt.unyt_array` instance,
-             then the units will be interpreted automatically; otherwise, units are assumed to be kpc.
-            By default, the ``box_size`` is determined such that the resulting grid contains the full radial domain of the :py:class:`ClusterModel`.
+            The length of the grid along each of the physical axes. Along with
+            ``left_edge``, this argument determines the positioning of the grid
+            and the model within it. If specified, ``box_size`` should be a length
+            3 iterable with each of the entries representing the length of the
+            grid along the respective axis. If elements of the iterable have units,
+            or the array is a :py:class:`unyt.unyt_array` instance, then the units
+            will be interpreted automatically; otherwise, units are assumed to be kpc.
+            By default, the ``box_size`` is determined such that the resulting grid
+            contains the full radial domain of the :py:class:`ClusterModel`.
         overwrite : bool, optional
-            If ``False`` (default), the an error is raised if ``filename`` already exists. Otherwise, ``filename`` will be deleted and overwritten
-            by this method.
+            If ``False`` (default), the an error is raised if ``filename`` already
+            exists. Otherwise, ``filename`` will be deleted and overwritten by this
+            method.
         chunksize : int, optional
-            The maximum chunksize for subgrid operations. Lower values with increase the execution time but save memory. By default,
-            chunks contain no more that :math:`64^3` cells (``chunksize=64``).
+            The maximum chunksize for subgrid operations. Lower values with increase
+            the execution time but save memory. By default, chunks contain no more
+            than :math:`64^3` cells (``chunksize=64``).
 
         Returns
         -------
@@ -463,12 +451,14 @@ class ClusterICs:
         Notes
         -----
 
-        Generically, converting a :py:class:`ClusterModel` instance to a valid ``yt`` dataset occurs in two steps. In the first step,
-        the dataset is written to disk on a uniform grid (or, more generally, an AMR grid). From this grid, ``yt`` can then interpret the
-        data and construct a dataset from there.
+        Generically, converting a :py:class:`ClusterModel` instance to a valid
+        ``yt`` dataset occurs in two steps. In the first step, the dataset is written
+        to disk on a uniform grid (or, more generally, an AMR grid). From this grid,
+        ``yt`` can then interpret the data and construct a dataset from there.
 
-        Because constructing the underlying grid is a memory intensive procedure, this method utilizes the HDF5 structure as an intermediary
-        (effectively using the disk for VRAM).
+        Because constructing the underlying grid is a memory intensive procedure, this
+        method utilizes the HDF5 structure as an intermediary (effectively using the
+        disk for VRAM).
 
         """
         from cluster_generator.data_structures import YTHDF5
