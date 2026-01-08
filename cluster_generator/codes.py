@@ -5,11 +5,11 @@ Code-specific utilities for the ``cluster_generator`` library.
 import h5py
 import numpy as np
 from pathlib import Path
-from unyt import uconcatenate, unyt_array
+from unyt import uconcatenate, unyt_array, unyt_quantity
 
 from cluster_generator.model import ClusterModel
 from cluster_generator.particles import ClusterParticles
-from cluster_generator.utils import mylog
+from cluster_generator.utils import mylog, parse_prng
 
 
 def write_amr_particles(
@@ -234,48 +234,53 @@ def setup_ramses_ics(ics, regenerate_particles=False):
     np.savetxt("Merger_Config.txt", config_lines, fmt="%s")
 
 
-def setup_arepo_ics(ics, boxsize, nx, ic_file, overwrite=False, regenerate_particles=False, prng=None):
-    fields = {}
-    cparts = ics.setup_particle_ics(regenerate_particles=regenerate_particles, prng=prng)
-    ngrid = nx**3
-    dx = boxsize / nx
-    le = 0.5 * dx
-    re = boxsize - 0.5 * dx
-    posg = np.mgrid[le : re : nx * 1j, le : re : nx * 1j, le : re : nx * 1j].reshape(3, ngrid).T
+def setup_arepo_ics(
+    ics,
+    boxsize,
+    ic_file,
+    bkg_density,
+    overwrite=False,
+    regenerate_particles=False,
+    prng=None,
+):
+    prng = parse_prng(prng)
+    bkg_density = unyt_quantity(bkg_density, "g/cm**3").to("Msun/kpc**3")
+    mylog.info("Background cell density is %g Msun/kpc**3.", bkg_density.value)
+
+    parts = ics.setup_particle_ics(regenerate_particles=regenerate_particles, prng=prng)
+    src_particle_mass = parts["gas", "particle_mass"][0].to_value("Msun")
+    mylog.info("Source particle mass is %g Msun.", src_particle_mass)
+
+    dV = src_particle_mass / bkg_density
+    V = boxsize**3
+    nnew = int(V / dV)
+    posg = prng.uniform(low=0, high=boxsize, size=(nnew, 3))
     rmax2 = ics.r_max**2
     idxs = np.sum((posg - ics.center[0].v) ** 2, axis=1) > rmax2[0]
     if ics.num_halos > 1:
         idxs |= np.sum((posg - ics.center[1].v) ** 2, axis=1) > rmax2[1]
     if ics.num_halos > 2:
         idxs |= np.sum((posg - ics.center[2].v) ** 2, axis=1) > rmax2[2]
-    dV = dx**3
     nleft = idxs.sum()
-    idens = np.argmin(cparts["gas", "density"].d)
-    dens = cparts["gas", "density"].d[idens] * np.ones(nleft)
-    eint = cparts["gas", "thermal_energy"].d[idens] * np.ones(nleft)
-    fields["gas", "particle_position"] = unyt_array(posg[idxs, :], "kpc")
-    fields["gas", "particle_velocity"] = unyt_array(np.zeros((nleft, 3)), "kpc/Myr")
-    fields["gas", "particle_mass"] = unyt_array(dens * dV, "Msun")
-    fields["gas", "density"] = unyt_array(dens, "Msun/kpc**3")
-    fields["gas", "thermal_energy"] = unyt_array(eint, "kpc**2/Myr**2")
-    mylog.info(
-        "Background cell density is %g g/cm**3.",
-        fields["gas", "density"][0].to_value("g/cm**3"),
-    )
-    mylog.info(
-        "Background cell mass is %g Msun.",
-        fields["gas", "particle_mass"][0].to_value("Msun"),
-    )
-    all_parts = cparts + ClusterParticles.from_fields(fields)
-    all_parts.write_to_gadget_file(ic_file, boxsize, overwrite=overwrite, code="arepo")
+    fields = {
+        ("gas", "particle_position"): unyt_array(posg[idxs, :], "kpc"),
+        ("gas", "particle_velocity"): unyt_array(np.zeros((nleft, 3)), "kpc/Myr"),
+        ("gas", "density"): bkg_density * np.ones(nleft),
+        ("gas", "thermal_energy"): unyt_array(np.zeros(nleft), "kpc**2/Myr**2"),
+        ("gas", "particle_mass"): unyt_array(src_particle_mass * np.ones(nleft), "Msun"),
+    }
+    parts = parts + ClusterParticles.from_fields(fields)
+    new_parts = ics.resample_particle_ics(parts, bkg_density=bkg_density.value)
+    new_parts.write_to_gadget_file(ic_file, boxsize, overwrite=overwrite, code="arepo")
 
 
-def resample_arepo_ics(ics, infile, outfile, overwrite=False):
+def resample_arepo_ics(ics, infile, outfile, bkg_density, overwrite=False):
     parts = ClusterParticles.from_gadget_file(infile)
-    new_parts = ics.resample_particle_ics(parts)
+    bkg_density = unyt_quantity(bkg_density, "g/cm**3").to("Msun/kpc**3")
+    new_parts = ics.resample_particle_ics(parts, recalc_mass=True, bkg_density=bkg_density.value)
     with h5py.File(infile, "r") as f:
         boxsize = f["Header"].attrs["BoxSize"]
-    new_parts.write_to_gadget_file(outfile, boxsize, overwrite=overwrite)
+    new_parts.write_to_gadget_file(outfile, boxsize, overwrite=overwrite, code="arepo")
 
 
 def setup_gizmo_ics(ics):

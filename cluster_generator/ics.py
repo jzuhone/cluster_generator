@@ -339,7 +339,7 @@ class ClusterICs:
             )
         return all_parts
 
-    def resample_particle_ics(self, parts, passive_scalars=None):
+    def resample_particle_ics(self, parts, passive_scalars=None, recalc_mass=False, bkg_density=None):
         r"""
         Given a Gadget-HDF5-like initial conditions file which has been
         output from some type of relaxation process (such as making a
@@ -360,6 +360,8 @@ class ClusterICs:
                 self.center[0],
                 self.velocity[0],
                 passive_scalars=passive_scalars,
+                recalc_mass=recalc_mass,
+                bkg_density=bkg_density,
             )
         elif self.num_halos == 2:
             new_parts = resample_two_clusters(
@@ -370,8 +372,9 @@ class ClusterICs:
                 self.center[1],
                 self.velocity[0],
                 self.velocity[1],
-                self.r_max,
                 passive_scalars=passive_scalars,
+                recalc_mass=recalc_mass,
+                bkg_density=bkg_density,
             )
         else:
             new_parts = resample_three_clusters(
@@ -385,8 +388,9 @@ class ClusterICs:
                 self.velocity[0],
                 self.velocity[1],
                 self.velocity[2],
-                self.r_max,
                 passive_scalars=passive_scalars,
+                recalc_mass=recalc_mass,
+                bkg_density=bkg_density,
             )
         return new_parts
 
