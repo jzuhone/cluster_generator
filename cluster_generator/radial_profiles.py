@@ -849,5 +849,5 @@ def find_radius_mass(m_r, delta, z=0.0, cosmo=None):
     def f(r):
         return 3.0 * m_r(r) / (4.0 * np.pi * r**3) - delta * rho_crit
 
-    r_delta = bisect(f, 0.01, 10000.0)
+    r_delta = bisect(f, 1.0, 10000.0)
     return r_delta, m_r(r_delta)
