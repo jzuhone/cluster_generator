@@ -2,8 +2,6 @@
 Code-specific utilities for the ``cluster_generator`` library.
 """
 
-import itertools
-
 import h5py
 import numpy as np
 from pathlib import Path
@@ -392,19 +390,11 @@ def _lloyd_relax(
 
     * **grid** (default): Approximates the Voronoi diagram by seeding a
       regular grid of ``grid_oversample × N`` points and assigning each grid
-      point to its nearest particle via a KDTree.  Each particle then moves
-      to the (density-)weighted centroid of its owned grid points.  Fast (no
-      explicit Voronoi construction), but centroid accuracy improves with
-      ``grid_oversample``; the default of 8 gives ~18 % of mean-spacing
-      error per centroid, while 64 reduces this to ~3 %.  Cells very close
-      to a box wall may drift inward by about half a grid-cell spacing
-      (≲ 1 % of the box side for N ≳ 10\ :sup:`4`).
-    * **voronoi**: Uses ``scipy.spatial.Voronoi`` (qhull) with mirror-
-      reflected ghost images to bound all boundary cells.  The centroid of
-      each Voronoi polyhedron is computed exactly via tetrahedral
-      decomposition of its convex hull.  Produces no systematic boundary
-      drift and gives the highest mesh quality, but is significantly slower
-      than ``'grid'`` for large N.
+      point to its nearest particle.  Each particle then moves to the
+      (density-)weighted centroid of its owned grid points.  An adaptive
+      coarse-to-fine schedule automatically uses a 2× coarser grid for early
+      iterations (large displacement) and upgrades as displacement falls,
+      reducing per-iteration cost without sacrificing final quality.
 
     Iteration stops after ``num_iterations`` steps or earlier when the
     maximum point displacement in a step falls below ``tol`` times the mean
@@ -419,8 +409,8 @@ def _lloyd_relax(
         Side length of the cubic box in kpc.
     num_iterations : int, optional
         Maximum number of Lloyd iterations. Default: 50
-    method : {'grid', 'voronoi'}, optional
-        Algorithm backend. Default: ``'grid'``
+    method : str, optional
+        Algorithm backend. Only ``'grid'`` is supported. Default: ``'grid'``
     tol : float or None, optional
         Convergence tolerance as a fraction of the mean inter-particle
         spacing.  Iteration stops early when the maximum displacement in a
@@ -434,8 +424,7 @@ def _lloyd_relax(
     density_func : callable or None, optional
         A function ``density_func(pos)`` that accepts an ``(M, 3)`` array
         of positions in kpc and returns ``(M,)`` gas densities.  When
-        provided, each grid point (``'grid'`` backend) or Voronoi vertex
-        (``'voronoi'`` backend) is weighted by its local density, so the
+        provided, each grid point is weighted by its local density, so the
         algorithm converges to **equal-mass** cells rather than equal-volume
         cells.  This is strongly recommended for non-uniform density
         distributions such as galaxy clusters; without it, the relaxation
@@ -449,9 +438,9 @@ def _lloyd_relax(
 
     Notes
     -----
-    For very large particle counts (> ~10\ :sup:`6`) the ``'voronoi'``
-    backend becomes prohibitively slow; use ``'grid'`` with a higher
-    ``grid_oversample`` instead, or use AREPO's built-in ``MESHRELAX``.
+    For very large particle counts (> ~10\ :sup:`6`) use a higher
+    ``grid_oversample`` for better centroid accuracy, or use AREPO's
+    built-in ``MESHRELAX``.
     """
     pos = np.asarray(positions, dtype=float).copy()
     n = len(pos)
@@ -547,96 +536,7 @@ def _lloyd_relax(
 
         return pos
 
-    if method == "voronoi":
-        from scipy.spatial import ConvexHull, QhullError, Voronoi
-
-        # Ghost layer of 1.5 mean spacings ensures all boundary cells have
-        # finite Voronoi vertices after reflection.
-        ghost_thickness = 1.5 * mean_spacing
-
-        # All 26 non-identity shifts (faces, edges, corners of the unit cube).
-        shifts = [s for s in itertools.product([-1, 0, 1], repeat=3) if any(s)]
-
-        def _cell_centroid(verts):
-            """True centroid of a convex polyhedron via tetrahedral decomposition."""
-            try:
-                hull = ConvexHull(verts)
-            except (QhullError, Exception):
-                return verts.mean(axis=0)
-            apex = verts[hull.vertices].mean(axis=0)
-            total_vol = 0.0
-            weighted = np.zeros(3)
-            for tri in hull.simplices:
-                a, b, c = verts[tri[0]], verts[tri[1]], verts[tri[2]]
-                v = np.dot(a - apex, np.cross(b - apex, c - apex)) / 6.0
-                total_vol += v
-                weighted += v * (apex + a + b + c) * 0.25
-            if abs(total_vol) < 1e-30:
-                return verts.mean(axis=0)
-            return weighted / total_vol
-
-        for it in range(num_iterations):
-            mylog.info(
-                "Lloyd's relaxation (voronoi): iteration %d/%d.",
-                it + 1,
-                num_iterations,
-            )
-
-            # Build extended point set with mirror-reflected ghost images.
-            chunks = [pos]
-            for shift in shifts:
-                mask = np.ones(n, dtype=bool)
-                for dim, s in enumerate(shift):
-                    if s == -1:
-                        mask &= pos[:, dim] < ghost_thickness
-                    elif s == 1:
-                        mask &= pos[:, dim] > (boxsize - ghost_thickness)
-                if not mask.any():
-                    continue
-                ghost = pos[mask].copy()
-                for dim, s in enumerate(shift):
-                    if s == -1:
-                        ghost[:, dim] = -ghost[:, dim]
-                    elif s == 1:
-                        ghost[:, dim] = 2.0 * boxsize - ghost[:, dim]
-                chunks.append(ghost)
-
-            extended = np.vstack(chunks)
-            vor = Voronoi(extended)
-
-            # Compute the (density-weighted) centroid for each real particle's cell.
-            new_pos = pos.copy()
-            for i in range(n):
-                region = vor.regions[vor.point_region[i]]
-                if -1 in region or len(region) < 4:
-                    continue
-                verts = vor.vertices[region]
-                if density_func is not None:
-                    w = density_func(verts)
-                    w = np.maximum(w, 0.0)
-                    if w.sum() > 0:
-                        new_pos[i] = (w[:, np.newaxis] * verts).sum(axis=0) / w.sum()
-                    else:
-                        new_pos[i] = _cell_centroid(verts)
-                else:
-                    new_pos[i] = _cell_centroid(verts)
-
-            new_pos = np.clip(new_pos, 0.0, boxsize)
-
-            max_disp = np.max(np.linalg.norm(new_pos - pos, axis=1))
-            pos = new_pos
-            if tol is not None and max_disp < tol * mean_spacing:
-                mylog.info(
-                    "Lloyd's relaxation (voronoi): converged after %d iterations "
-                    "(max disp = %.2e mean spacings).",
-                    it + 1,
-                    max_disp / mean_spacing,
-                )
-                break
-
-        return pos
-
-    raise ValueError(f"Unknown method {method!r}. Choose 'grid' or 'voronoi'.")
+    raise ValueError(f"Unknown method {method!r}. Only 'grid' is supported.")
 
 
 def setup_arepo_ics(
@@ -683,11 +583,9 @@ def setup_arepo_ics(
         to skip relaxation.  Iteration may stop earlier if ``lloyd_tol``
         is satisfied.  After relaxation the cluster profiles are resampled
         at the new cell positions.
-    lloyd_method : {'grid', 'voronoi'}, optional
-        Backend for Lloyd's algorithm.  ``'grid'`` (default) is fast and
-        suitable for large N; ``'voronoi'`` uses exact Voronoi centroids
-        and gives the highest mesh quality.  Ignored when
-        ``num_lloyd_iterations`` is 0.
+    lloyd_method : str, optional
+        Backend for Lloyd's algorithm. Only ``'grid'`` is supported. Ignored
+        when ``num_lloyd_iterations`` is 0.
     lloyd_tol : float or None, optional
         Convergence tolerance for Lloyd's relaxation, as a fraction of the
         mean inter-particle spacing.  Iteration stops early when the
@@ -800,10 +698,8 @@ def relax_arepo_ics(
     num_iterations : int, optional
         Maximum number of Lloyd relaxation iterations.  Iteration may stop
         earlier if ``lloyd_tol`` is satisfied. Default: 50
-    lloyd_method : {'grid', 'voronoi'}, optional
-        Backend for Lloyd's algorithm.  ``'grid'`` (default) is fast and
-        suitable for large N; ``'voronoi'`` uses exact Voronoi centroids
-        and gives the highest mesh quality.
+    lloyd_method : str, optional
+        Backend for Lloyd's algorithm. Only ``'grid'`` is supported.
     lloyd_tol : float or None, optional
         Convergence tolerance as a fraction of the mean inter-particle
         spacing.  Iteration stops early when the maximum cell displacement
