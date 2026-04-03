@@ -606,6 +606,124 @@ class ClusterModel:
         return cls._from_scratch(fields, stellar_density=stellar_density)
 
     @classmethod
+    def from_entr_and_tden(
+        cls,
+        rmin: float,
+        rmax: float,
+        entropy: Callable[[ArrayLike], NDArray[np.float64]],
+        total_density: Callable[[ArrayLike], NDArray[np.float64]],
+        stellar_density: Callable[[ArrayLike], NDArray[np.float64]] = None,
+        num_points: int = 1000,
+    ) -> Self:
+        r"""
+        Construct a hydrostatic equilibrium model using gas entropy
+        and total density profiles.
+
+        The gas density profile is derived analytically by solving the
+        hydrostatic equilibrium (HSE) equation
+
+        .. math::
+
+            \frac{dP}{dr} = \rho\, g(r)
+
+        for :math:`\rho(r)`, given the entropy profile
+        :math:`K(r) = kT / n_e^{2/3}` (with :math:`kT` in keV and
+        :math:`n_e` in :math:`\text{cm}^{-3}`) and the gravitational field
+        :math:`g(r)` determined by the total density.
+
+        Because :math:`P = \rho\,K(r)\,n_e^{2/3}\,/\,(\mu m_p)` can be
+        written as :math:`P = f(r)\,\rho^{5/3}` with
+        :math:`f \propto K`, the substitution :math:`u = \rho^{2/3}`
+        turns the HSE equation into a **linear** first-order ODE.
+        Its solution subject to the boundary condition
+        :math:`\rho \to 0` as :math:`r \to \infty` is
+
+        .. math::
+
+            \rho^{2/3}(r) = \frac{2}{5}\,f(r)^{-2/5}
+                \int_r^{\infty} f(r')^{-3/5}\,(-g(r'))\,dr'
+
+        which is evaluated numerically.
+
+        Parameters
+        ----------
+        rmin : float
+            Minimum radius of profiles in kpc.
+        rmax : float
+            Maximum radius of profiles in kpc.
+        entropy : :class:`~cluster_generator.radial_profiles.RadialProfile`
+            A radial profile for the entropy
+            :math:`K = kT / n_e^{2/3}` in units of keV cm\ :sup:`2`.
+        total_density : :class:`~cluster_generator.radial_profiles.RadialProfile`
+            A radial profile describing the total mass density.
+        stellar_density : :class:`~cluster_generator.radial_profiles.RadialProfile`, optional
+            A radial profile describing the stellar mass density, if desired.
+        num_points : integer, optional
+            The number of points the profiles are evaluated at.
+        """
+        mylog.info("Computing the profiles from entropy and total density.")
+        rr = np.logspace(np.log10(rmin), np.log10(rmax), num_points, endpoint=True)
+        fields = OrderedDict()
+        fields["radius"] = unyt_array(rr, "kpc")
+        fields["total_density"] = unyt_array(total_density(rr), "Msun/kpc**3")
+        mylog.info("Integrating total mass profile.")
+        fields["total_mass"] = unyt_array(integrate_mass(total_density, rr), "Msun")
+        fields["gravitational_field"] = -G * fields["total_mass"] / fields["radius"] ** 2
+        fields["gravitational_field"].convert_to_units("kpc/Myr**2")
+
+        # Define C so that P [Msun/(kpc*Myr²)] = (K/C) * rho^{5/3} holds with
+        # K in keV*cm², rho in Msun/kpc³, g in kpc/Myr², and r in kpc.
+        # Derived from P = rho*T/(mu*mp) and T = K*n_e^{2/3} with
+        # n_e = rho/(mue*mp*kpc_to_cm³):
+        #   C = mu * mp * (mue * mp * kpc_to_cm³)^{2/3} / keV_to_gal
+        # where keV_to_gal converts 1 keV → Msun*kpc²/Myr².
+        # With this choice f ~ 1e-4 and f^{-3/5} ~ 100, keeping intermediate
+        # values close to unity throughout the integration.
+        keV_to_gal = unyt_quantity(1.0, "keV").to_value("Msun*kpc**2/Myr**2")
+        C = mu * mp.v * (mue * mp.v * kpc_to_cm**3) ** (2.0 / 3.0) / keV_to_gal
+
+        K = entropy(rr)  # keV*cm²
+        g = fields["gravitational_field"].v  # kpc/Myr²
+        f = K / C  # kpc^4/(Msun^{2/3}*Myr²)
+
+        # Spline interpolants for the integrand f^{-3/5} * (-g).
+        f_spline = InterpolatedUnivariateSpline(rr, f)
+        g_spline = InterpolatedUnivariateSpline(rr, g)
+
+        def integrand(r):
+            return f_spline(r) ** (-3.0 / 5.0) * (-g_spline(r))
+
+        mylog.info("Integrating density profile.")
+        # integrate() returns ∫_r^{rmax} integrand dr'  for each r in rr.
+        integrals = integrate(integrand, rr)
+
+        # Tail correction beyond rmax: assume g ∝ 1/r² (point-mass limit) and
+        # K ∝ r^alpha (power-law extrapolation with slope estimated from the
+        # last two grid points).  Then
+        #   ∫_{rmax}^∞ f(rmax)^{-3/5} * (r/rmax)^{-3α/5} * (-g(rmax)) * (rmax/r)² dr
+        #     = f[-1]^{-3/5} * (-g[-1]) * rmax / (3α/5 + 1)
+        dlnf = np.log(f[-1] / f[-2])
+        dlnr = np.log(rr[-1] / rr[-2])
+        alpha_f = max(0.0, dlnf / dlnr)  # d(ln f)/d(ln r); clamped ≥ 0 for convergence
+        integrals += f[-1] ** (-3.0 / 5.0) * (-g[-1]) * rr[-1] / (3.0 * alpha_f / 5.0 + 1.0)
+
+        # rho^{2/3}(r) = (2/5) * f(r)^{-2/5} * integral  →  rho in Msun/kpc³
+        u = (2.0 / 5.0) * f ** (-2.0 / 5.0) * integrals
+        rho = np.maximum(u, 0.0) ** 1.5  # Msun/kpc³
+
+        fields["density"] = unyt_array(rho, "Msun/kpc**3")
+
+        # Temperature: T = K * n_e^{2/3}, with n_e = rho / (mue * mp * kpc_to_cm³)
+        n_e = rho / (mue * mp.v * kpc_to_cm**3)  # cm⁻³ (raw values)
+        fields["temperature"] = unyt_array(entropy(rr) * n_e**tt, "keV")
+
+        # Pressure from the equation of state (consistent with HSE by construction)
+        fields["pressure"] = fields["density"] * fields["temperature"] / (mu * mp)
+        fields["pressure"].convert_to_units("Msun/(kpc*Myr**2)")
+
+        return cls._from_scratch(fields, stellar_density=stellar_density)
+
+    @classmethod
     def no_gas(
         cls,
         rmin: float,

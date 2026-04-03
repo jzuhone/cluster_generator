@@ -2,6 +2,8 @@
 Code-specific utilities for the ``cluster_generator`` library.
 """
 
+import itertools
+
 import h5py
 import numpy as np
 from pathlib import Path
@@ -10,6 +12,92 @@ from unyt import uconcatenate, unyt_array, unyt_quantity
 from cluster_generator.model import ClusterModel
 from cluster_generator.particles import ClusterParticles
 from cluster_generator.utils import mylog, parse_prng
+
+# ---------------------------------------------------------------------------
+# Optional Numba-accelerated nearest-particle search for Lloyd's relaxation.
+# When Numba is available, _nb_find_nearest replaces scipy KDTree.query for
+# the grid backend.  The algorithm builds a spatial bucket (uniform hash)
+# over the particle positions and searches the 5×5×5 = 125 neighbouring
+# buckets for each grid point — O(M × 125 / num_threads) rather than the
+# O(M × log N) of a KDTree query, and fully parallel.
+# ---------------------------------------------------------------------------
+try:
+    import numba as _numba
+
+    @_numba.njit(parallel=True, cache=True)
+    def _nb_find_nearest(grid_pts, pos, bucket_particles, bucket_offsets, nb, bucket_size):
+        """Return nearest-particle index for each grid point (Numba parallel)."""
+        M = grid_pts.shape[0]
+        nearest = np.empty(M, dtype=_numba.int64)
+        for m in _numba.prange(M):
+            gx = grid_pts[m, 0]
+            gy = grid_pts[m, 1]
+            gz = grid_pts[m, 2]
+            bi = min(int(gx / bucket_size), nb - 1)
+            bj = min(int(gy / bucket_size), nb - 1)
+            bk = min(int(gz / bucket_size), nb - 1)
+            min_d2 = 1.0e200
+            best = 0
+            for di in range(-2, 3):
+                ii = bi + di
+                if ii < 0 or ii >= nb:
+                    continue
+                for dj in range(-2, 3):
+                    jj = bj + dj
+                    if jj < 0 or jj >= nb:
+                        continue
+                    for dk in range(-2, 3):
+                        kk = bk + dk
+                        if kk < 0 or kk >= nb:
+                            continue
+                        bidx = (ii * nb + jj) * nb + kk
+                        for pi in range(bucket_offsets[bidx], bucket_offsets[bidx + 1]):
+                            p = bucket_particles[pi]
+                            dx = gx - pos[p, 0]
+                            dy = gy - pos[p, 1]
+                            dz = gz - pos[p, 2]
+                            d2 = dx * dx + dy * dy + dz * dz
+                            if d2 < min_d2:
+                                min_d2 = d2
+                                best = p
+            nearest[m] = best
+        return nearest
+
+    _HAVE_NUMBA = True
+    mylog.debug("Numba found; Lloyd's grid backend will use parallel bucket NNS.")
+except ImportError:
+    _HAVE_NUMBA = False
+    mylog.debug("Numba not found; Lloyd's grid backend will use scipy KDTree.")
+
+
+def _build_bucket_structure(pos, boxsize):
+    """
+    Build a CSR-style spatial hash over particle positions.
+
+    Divides the box into a uniform grid with ~1 particle per bucket on
+    average.  Returns ``(bucket_particles, bucket_offsets, nb, bucket_size)``
+    suitable for passing to :func:`_nb_find_nearest`.
+    """
+    n = len(pos)
+    # target ≈ 1 particle/bucket; cap nb at 400 to bound memory
+    nb = min(max(int(round(n ** (1.0 / 3.0))), 2), 400)
+    bucket_size = boxsize / nb
+
+    bi = np.minimum((pos[:, 0] / bucket_size).astype(np.int64), nb - 1)
+    bj = np.minimum((pos[:, 1] / bucket_size).astype(np.int64), nb - 1)
+    bk = np.minimum((pos[:, 2] / bucket_size).astype(np.int64), nb - 1)
+    bucket_idx = (bi * nb + bj) * nb + bk
+
+    n_buckets = nb * nb * nb
+    counts = np.bincount(bucket_idx, minlength=n_buckets)
+    offsets = np.empty(n_buckets + 1, dtype=np.int64)
+    offsets[0] = 0
+    np.cumsum(counts, out=offsets[1:])
+
+    # Fill bucket_particles using argsort (groups particles by bucket).
+    order = np.argsort(bucket_idx, kind="stable").astype(np.int64)
+
+    return order, offsets, nb, bucket_size
 
 
 def write_amr_particles(
@@ -234,6 +322,323 @@ def setup_ramses_ics(ics, regenerate_particles=False):
     np.savetxt("Merger_Config.txt", config_lines, fmt="%s")
 
 
+def _make_density_func(ics, bkg_density):
+    """
+    Build a density callable ``rho(pos)`` from a :class:`ClusterICs` object.
+
+    The returned function evaluates the expected gas density (Msun/kpc³) at
+    an array of 3-D positions by summing the interpolated density profiles of
+    all clusters and applying ``bkg_density`` as a floor.  This is the same
+    convention used by :func:`~cluster_generator.particles._sample_clusters`.
+
+    Parameters
+    ----------
+    ics : ClusterICs
+        The ICs object whose ``profiles`` and ``center`` attributes describe
+        the cluster(s).
+    bkg_density : float
+        Background density floor in Msun/kpc³.
+
+    Returns
+    -------
+    callable
+        A function ``rho(pos)`` where *pos* is ``(M, 3)`` in kpc and the
+        return value is ``(M,)`` in Msun/kpc³.
+    """
+    from scipy.interpolate import InterpolatedUnivariateSpline
+
+    splines = []
+    for pf, ctr in zip(ics.profiles, ics.center, strict=True):
+        m = ClusterModel.from_h5_file(pf)
+        spl = InterpolatedUnivariateSpline(m["radius"].v, m["density"].v)
+        splines.append((ctr.v, spl))
+
+    def density_func(pos):
+        pos = np.asarray(pos)
+        dens = np.zeros(len(pos))
+        for ctr, spl in splines:
+            r = np.sqrt(((pos - ctr[np.newaxis, :]) ** 2).sum(axis=1))
+            dens += np.maximum(spl(r), 0.0)
+        return np.maximum(dens, bkg_density)
+
+    return density_func
+
+
+def _lloyd_relax(
+    positions,
+    boxsize,
+    num_iterations=50,
+    method="grid",
+    tol=1e-3,
+    grid_oversample=8,
+    density_func=None,
+):
+    r"""
+    Relax particle positions using Lloyd's algorithm for a non-periodic box.
+
+    Each iteration moves every point towards the **density-weighted** centroid
+    of its Voronoi cell (when ``density_func`` is provided) or the geometric
+    centroid (when it is not).
+
+    Using a density-weighted centroid is strongly recommended for non-uniform
+    density distributions such as galaxy clusters: pure geometric Lloyd's
+    drives cells toward equal *volume*, which in a steep density gradient
+    pushes dense-core particles outward.  Density weighting drives cells
+    toward equal *mass*, matching the behaviour of AREPO's
+    ``REGULARIZE_MESH_CM_DRIFT`` option (which shifts the target centroid in
+    the direction of the local density gradient).
+
+    Two backends are available:
+
+    * **grid** (default): Approximates the Voronoi diagram by seeding a
+      regular grid of ``grid_oversample × N`` points and assigning each grid
+      point to its nearest particle via a KDTree.  Each particle then moves
+      to the (density-)weighted centroid of its owned grid points.  Fast (no
+      explicit Voronoi construction), but centroid accuracy improves with
+      ``grid_oversample``; the default of 8 gives ~18 % of mean-spacing
+      error per centroid, while 64 reduces this to ~3 %.  Cells very close
+      to a box wall may drift inward by about half a grid-cell spacing
+      (≲ 1 % of the box side for N ≳ 10\ :sup:`4`).
+    * **voronoi**: Uses ``scipy.spatial.Voronoi`` (qhull) with mirror-
+      reflected ghost images to bound all boundary cells.  The centroid of
+      each Voronoi polyhedron is computed exactly via tetrahedral
+      decomposition of its convex hull.  Produces no systematic boundary
+      drift and gives the highest mesh quality, but is significantly slower
+      than ``'grid'`` for large N.
+
+    Iteration stops after ``num_iterations`` steps or earlier when the
+    maximum point displacement in a step falls below ``tol`` times the mean
+    inter-particle spacing (whichever comes first).
+
+    Parameters
+    ----------
+    positions : numpy.ndarray, shape (N, 3)
+        Initial positions in kpc, assumed to lie within
+        ``[0, boxsize]``\ :sup:`3`.
+    boxsize : float
+        Side length of the cubic box in kpc.
+    num_iterations : int, optional
+        Maximum number of Lloyd iterations. Default: 50
+    method : {'grid', 'voronoi'}, optional
+        Algorithm backend. Default: ``'grid'``
+    tol : float or None, optional
+        Convergence tolerance as a fraction of the mean inter-particle
+        spacing.  Iteration stops early when the maximum displacement in a
+        single step is less than ``tol × mean_spacing``.  Set to ``None``
+        to always run all ``num_iterations`` steps. Default: 1e-3
+    grid_oversample : int, optional
+        Number of grid points per particle for the ``'grid'`` backend
+        (total grid points ≈ ``grid_oversample × N``).  Higher values give
+        more accurate centroid estimates at greater memory and time cost.
+        Recommended values: 8 (fast), 64 (production quality). Default: 8
+    density_func : callable or None, optional
+        A function ``density_func(pos)`` that accepts an ``(M, 3)`` array
+        of positions in kpc and returns ``(M,)`` gas densities.  When
+        provided, each grid point (``'grid'`` backend) or Voronoi vertex
+        (``'voronoi'`` backend) is weighted by its local density, so the
+        algorithm converges to **equal-mass** cells rather than equal-volume
+        cells.  This is strongly recommended for non-uniform density
+        distributions such as galaxy clusters; without it, the relaxation
+        pushes dense-core particles outward.  When ``None``, all weights are
+        equal (geometric centroid). Default: None
+
+    Returns
+    -------
+    numpy.ndarray, shape (N, 3)
+        Relaxed positions, clipped to ``[0, boxsize]``\ :sup:`3`.
+
+    Notes
+    -----
+    For very large particle counts (> ~10\ :sup:`6`) the ``'voronoi'``
+    backend becomes prohibitively slow; use ``'grid'`` with a higher
+    ``grid_oversample`` instead, or use AREPO's built-in ``MESHRELAX``.
+    """
+    pos = np.asarray(positions, dtype=float).copy()
+    n = len(pos)
+    mean_spacing = boxsize / n ** (1.0 / 3.0)
+
+    if method == "grid":
+        # Adaptive coarse-to-fine grid schedule.
+        # Minimum oversample=4 ensures each particle owns enough grid points
+        # to get a meaningful centroid estimate (oversample<4 causes particles
+        # to snap to grid positions and stop moving).
+        # In early iterations the displacement is large; a 2× coarser grid
+        # (8× fewer points) gives centroids accurate enough to make progress
+        # at a fraction of the cost.  Thresholds (in mean_spacing units) are
+        # chosen so the centroid approximation error is well below the current
+        # displacement before each upgrade.
+        _phases = [
+            (max(4, grid_oversample // 4), 0.4),  # (oversample, upgrade_below_disp)
+            (max(8, grid_oversample // 2), 0.05),
+            (grid_oversample, None),  # final phase
+        ]
+        # Deduplicate consecutive phases with the same oversample value.
+        seen = set()
+        phases = []
+        for s, thr in _phases:
+            if s not in seen:
+                seen.add(s)
+                phases.append((s, thr))
+        # Ensure the last phase always has threshold=None.
+        phases[-1] = (phases[-1][0], None)
+
+        def _build_grid(oversample):
+            gn = max(2, int(round((oversample * n) ** (1.0 / 3.0))))
+            e = (np.arange(gn) + 0.5) * (boxsize / gn)
+            gx_, gy_, gz_ = np.meshgrid(e, e, e, indexing="ij")
+            gp = np.column_stack([gx_.ravel(), gy_.ravel(), gz_.ravel()])
+            gw = density_func(gp).astype(float) if density_func is not None else np.ones(len(gp))
+            return gp, gw
+
+        phase_idx = 0
+        current_os = phases[0][0]
+        grid_pts, grid_weights = _build_grid(current_os)
+        mylog.info("Lloyd's grid: starting with oversample=%d (%d grid points).", current_os, len(grid_pts))
+
+        for it in range(num_iterations):
+            mylog.info(
+                "Lloyd's relaxation (grid): iteration %d/%d (oversample=%d).",
+                it + 1,
+                num_iterations,
+                current_os,
+            )
+            if _HAVE_NUMBA:
+                bucket_particles, bucket_offsets, nb, bucket_size = _build_bucket_structure(pos, boxsize)
+                nearest = _nb_find_nearest(grid_pts, pos, bucket_particles, bucket_offsets, nb, bucket_size)
+            else:
+                from scipy.spatial import KDTree
+
+                _, nearest = KDTree(pos).query(grid_pts, workers=-1)
+                nearest = nearest.astype(np.int64)
+
+            wsum = np.bincount(nearest, weights=grid_weights, minlength=n).astype(float)
+            valid = wsum > 0
+            new_pos = pos.copy()
+            for d in range(3):
+                sums = np.bincount(nearest, weights=grid_weights * grid_pts[:, d], minlength=n)
+                new_pos[valid, d] = sums[valid] / wsum[valid]
+            new_pos = np.clip(new_pos, 0.0, boxsize)
+
+            max_disp = np.max(np.linalg.norm(new_pos - pos, axis=1))
+            pos = new_pos
+            mylog.info(
+                "Lloyd's relaxation (grid): max displacement = %.3e mean spacings.",
+                max_disp / mean_spacing,
+            )
+
+            # Check convergence.
+            if tol is not None and max_disp < tol * mean_spacing:
+                mylog.info("Lloyd's relaxation (grid): converged after %d iterations.", it + 1)
+                break
+
+            # Upgrade to finer grid if displacement has fallen below threshold.
+            upgrade_thr = phases[phase_idx][1]
+            if upgrade_thr is not None and max_disp < upgrade_thr * mean_spacing:
+                phase_idx += 1
+                new_os = phases[phase_idx][0]
+                if new_os != current_os:
+                    current_os = new_os
+                    grid_pts, grid_weights = _build_grid(current_os)
+                    mylog.info(
+                        "Lloyd's grid: upgraded to oversample=%d (%d grid points).",
+                        current_os,
+                        len(grid_pts),
+                    )
+
+        return pos
+
+    if method == "voronoi":
+        from scipy.spatial import ConvexHull, QhullError, Voronoi
+
+        # Ghost layer of 1.5 mean spacings ensures all boundary cells have
+        # finite Voronoi vertices after reflection.
+        ghost_thickness = 1.5 * mean_spacing
+
+        # All 26 non-identity shifts (faces, edges, corners of the unit cube).
+        shifts = [s for s in itertools.product([-1, 0, 1], repeat=3) if any(s)]
+
+        def _cell_centroid(verts):
+            """True centroid of a convex polyhedron via tetrahedral decomposition."""
+            try:
+                hull = ConvexHull(verts)
+            except (QhullError, Exception):
+                return verts.mean(axis=0)
+            apex = verts[hull.vertices].mean(axis=0)
+            total_vol = 0.0
+            weighted = np.zeros(3)
+            for tri in hull.simplices:
+                a, b, c = verts[tri[0]], verts[tri[1]], verts[tri[2]]
+                v = np.dot(a - apex, np.cross(b - apex, c - apex)) / 6.0
+                total_vol += v
+                weighted += v * (apex + a + b + c) * 0.25
+            if abs(total_vol) < 1e-30:
+                return verts.mean(axis=0)
+            return weighted / total_vol
+
+        for it in range(num_iterations):
+            mylog.info(
+                "Lloyd's relaxation (voronoi): iteration %d/%d.",
+                it + 1,
+                num_iterations,
+            )
+
+            # Build extended point set with mirror-reflected ghost images.
+            chunks = [pos]
+            for shift in shifts:
+                mask = np.ones(n, dtype=bool)
+                for dim, s in enumerate(shift):
+                    if s == -1:
+                        mask &= pos[:, dim] < ghost_thickness
+                    elif s == 1:
+                        mask &= pos[:, dim] > (boxsize - ghost_thickness)
+                if not mask.any():
+                    continue
+                ghost = pos[mask].copy()
+                for dim, s in enumerate(shift):
+                    if s == -1:
+                        ghost[:, dim] = -ghost[:, dim]
+                    elif s == 1:
+                        ghost[:, dim] = 2.0 * boxsize - ghost[:, dim]
+                chunks.append(ghost)
+
+            extended = np.vstack(chunks)
+            vor = Voronoi(extended)
+
+            # Compute the (density-weighted) centroid for each real particle's cell.
+            new_pos = pos.copy()
+            for i in range(n):
+                region = vor.regions[vor.point_region[i]]
+                if -1 in region or len(region) < 4:
+                    continue
+                verts = vor.vertices[region]
+                if density_func is not None:
+                    w = density_func(verts)
+                    w = np.maximum(w, 0.0)
+                    if w.sum() > 0:
+                        new_pos[i] = (w[:, np.newaxis] * verts).sum(axis=0) / w.sum()
+                    else:
+                        new_pos[i] = _cell_centroid(verts)
+                else:
+                    new_pos[i] = _cell_centroid(verts)
+
+            new_pos = np.clip(new_pos, 0.0, boxsize)
+
+            max_disp = np.max(np.linalg.norm(new_pos - pos, axis=1))
+            pos = new_pos
+            if tol is not None and max_disp < tol * mean_spacing:
+                mylog.info(
+                    "Lloyd's relaxation (voronoi): converged after %d iterations "
+                    "(max disp = %.2e mean spacings).",
+                    it + 1,
+                    max_disp / mean_spacing,
+                )
+                break
+
+        return pos
+
+    raise ValueError(f"Unknown method {method!r}. Choose 'grid' or 'voronoi'.")
+
+
 def setup_arepo_ics(
     ics,
     boxsize,
@@ -241,8 +646,61 @@ def setup_arepo_ics(
     bkg_density,
     overwrite=False,
     regenerate_particles=False,
+    num_lloyd_iterations=50,
+    lloyd_method="grid",
+    lloyd_tol=1e-3,
+    grid_oversample=8,
     prng=None,
 ):
+    r"""
+    Generate initial conditions for the AREPO code.
+
+    Creates cluster gas particles sampled from the density profile(s) and
+    fills the remainder of the box with a uniform background of equal-mass
+    gas cells. The combined distribution is written to a Gadget-HDF5 file
+    suitable for AREPO. Optionally, the gas cell positions can be relaxed
+    with Lloyd's algorithm before the final file is written.
+
+    Parameters
+    ----------
+    ics : ClusterICs
+        The :class:`~cluster_generator.ics.ClusterICs` object describing
+        the halo(s).
+    boxsize : float
+        Side length of the cubic box in kpc.
+    ic_file : str
+        Path for the output Gadget-HDF5 IC file.
+    bkg_density : float
+        Uniform background gas density in g/cm**3.  Background cells are
+        given equal mass to the cluster gas cells.
+    overwrite : bool, optional
+        Overwrite ``ic_file`` if it already exists. Default: False
+    regenerate_particles : bool, optional
+        Re-create particle files even if they already exist. Default: False
+    num_lloyd_iterations : int, optional
+        Maximum number of Lloyd's algorithm iterations used to regularise
+        the Voronoi mesh before writing the IC file.  Set to 0 (default)
+        to skip relaxation.  Iteration may stop earlier if ``lloyd_tol``
+        is satisfied.  After relaxation the cluster profiles are resampled
+        at the new cell positions.
+    lloyd_method : {'grid', 'voronoi'}, optional
+        Backend for Lloyd's algorithm.  ``'grid'`` (default) is fast and
+        suitable for large N; ``'voronoi'`` uses exact Voronoi centroids
+        and gives the highest mesh quality.  Ignored when
+        ``num_lloyd_iterations`` is 0.
+    lloyd_tol : float or None, optional
+        Convergence tolerance for Lloyd's relaxation, as a fraction of the
+        mean inter-particle spacing.  Iteration stops early when the
+        maximum cell displacement falls below this threshold.  Set to
+        ``None`` to always run all ``num_lloyd_iterations`` steps.
+        Default: 1e-3
+    grid_oversample : int, optional
+        Number of grid points per particle for the ``'grid'`` backend.
+        Higher values improve centroid accuracy at greater cost.
+        Use 8 (default) for speed or 64 for production-quality ICs.
+    prng : int, numpy.random.RandomState, or None, optional
+        Pseudo-random number generator seed or state. Default: None
+    """
     prng = parse_prng(prng)
     bkg_density = unyt_quantity(bkg_density, "g/cm**3").to("Msun/kpc**3")
     mylog.info("Background cell density is %g Msun/kpc**3.", bkg_density.value)
@@ -271,6 +729,27 @@ def setup_arepo_ics(
     }
     parts = parts + ClusterParticles.from_fields(fields)
     new_parts = ics.resample_particle_ics(parts, bkg_density=bkg_density.value)
+
+    if num_lloyd_iterations > 0:
+        gas_pos = new_parts["gas", "particle_position"].to_value("kpc")
+        mylog.info(
+            "Relaxing %d gas cells using Lloyd's algorithm (%d iterations).",
+            len(gas_pos),
+            num_lloyd_iterations,
+        )
+        density_func = _make_density_func(ics, bkg_density.value)
+        gas_pos = _lloyd_relax(
+            gas_pos,
+            boxsize,
+            num_iterations=num_lloyd_iterations,
+            method=lloyd_method,
+            tol=lloyd_tol,
+            grid_oversample=grid_oversample,
+            density_func=density_func,
+        )
+        new_parts["gas", "particle_position"] = unyt_array(gas_pos, "kpc")
+        new_parts = ics.resample_particle_ics(new_parts, recalc_mass=True, bkg_density=bkg_density.value)
+
     new_parts.write_to_gadget_file(ic_file, boxsize, overwrite=overwrite, code="arepo")
 
 
@@ -280,6 +759,92 @@ def resample_arepo_ics(ics, infile, outfile, bkg_density, overwrite=False):
     new_parts = ics.resample_particle_ics(parts, recalc_mass=True, bkg_density=bkg_density.value)
     with h5py.File(infile, "r") as f:
         boxsize = f["Header"].attrs["BoxSize"]
+    new_parts.write_to_gadget_file(outfile, boxsize, overwrite=overwrite, code="arepo")
+
+
+def relax_arepo_ics(
+    ics,
+    infile,
+    outfile,
+    bkg_density,
+    num_iterations=50,
+    lloyd_method="grid",
+    lloyd_tol=1e-3,
+    grid_oversample=8,
+    overwrite=False,
+):
+    r"""
+    Relax the Voronoi mesh in a set of AREPO initial conditions using
+    Lloyd's algorithm, then resample the cluster profiles onto the new mesh.
+
+    This function reads an existing Gadget-HDF5 IC file produced by
+    :func:`setup_arepo_ics`, iteratively moves each gas cell seed point to
+    the centroid of its Voronoi cell (Lloyd's algorithm), and writes a new
+    IC file with the updated positions. After relaxation the density,
+    thermal energy, and velocity fields are resampled from the cluster
+    profile(s) at the new cell positions.
+
+    Parameters
+    ----------
+    ics : ClusterICs
+        The :class:`~cluster_generator.ics.ClusterICs` object that was used
+        to produce ``infile``.
+    infile : str
+        Path to the input Gadget-HDF5 IC file (e.g. from
+        :func:`setup_arepo_ics`).
+    outfile : str
+        Path for the relaxed output IC file.
+    bkg_density : float
+        Background gas density in g/cm**3, used as a density floor when
+        resampling the cluster profile onto the relaxed mesh.
+    num_iterations : int, optional
+        Maximum number of Lloyd relaxation iterations.  Iteration may stop
+        earlier if ``lloyd_tol`` is satisfied. Default: 50
+    lloyd_method : {'grid', 'voronoi'}, optional
+        Backend for Lloyd's algorithm.  ``'grid'`` (default) is fast and
+        suitable for large N; ``'voronoi'`` uses exact Voronoi centroids
+        and gives the highest mesh quality.
+    lloyd_tol : float or None, optional
+        Convergence tolerance as a fraction of the mean inter-particle
+        spacing.  Iteration stops early when the maximum cell displacement
+        falls below this threshold.  Set to ``None`` to always run all
+        ``num_iterations`` steps. Default: 1e-3
+    grid_oversample : int, optional
+        Number of grid points per particle for the ``'grid'`` backend.
+        Higher values improve centroid accuracy at greater cost.
+        Use 8 (default) for speed or 64 for production-quality ICs.
+    overwrite : bool, optional
+        Overwrite ``outfile`` if it already exists. Default: False
+
+    See Also
+    --------
+    setup_arepo_ics : Generate AREPO ICs with optional inline relaxation.
+    resample_arepo_ics : Resample profiles onto a pre-relaxed mesh.
+    """
+    parts = ClusterParticles.from_gadget_file(infile)
+    bkg_density = unyt_quantity(bkg_density, "g/cm**3").to("Msun/kpc**3")
+
+    with h5py.File(infile, "r") as f:
+        boxsize = float(f["Header"].attrs["BoxSize"])
+
+    gas_pos = parts["gas", "particle_position"].to_value("kpc")
+    mylog.info(
+        "Relaxing %d gas cells using Lloyd's algorithm (up to %d iterations).",
+        len(gas_pos),
+        num_iterations,
+    )
+    gas_pos = _lloyd_relax(
+        gas_pos,
+        boxsize,
+        num_iterations=num_iterations,
+        method=lloyd_method,
+        tol=lloyd_tol,
+        grid_oversample=grid_oversample,
+        density_func=_make_density_func(ics, bkg_density.value),
+    )
+    parts["gas", "particle_position"] = unyt_array(gas_pos, "kpc")
+
+    new_parts = ics.resample_particle_ics(parts, bkg_density=bkg_density.value)
     new_parts.write_to_gadget_file(outfile, boxsize, overwrite=overwrite, code="arepo")
 
 
