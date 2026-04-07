@@ -19,7 +19,7 @@ class RadialProfile:
         else:
 
             def p(r):
-                return op(self.profile(r), r)
+                return op(self.profile(r), other)
 
         return p
 
