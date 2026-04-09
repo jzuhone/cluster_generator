@@ -196,8 +196,10 @@ def setup_gamer_ics(ics, regenerate_particles=False, use_tracers=False):
             f"Merger_File_Par{i + 1}\t\t{particle_file}\t# particle file of cluster {i + 1}",
             f"Merger_Coll_PosX{i + 1}\t\t{ics.center[i][0].v}\t# X-center of cluster {i + 1} in kpc",
             f"Merger_Coll_PosY{i + 1}\t\t{ics.center[i][1].v}\t# Y-center of cluster {i + 1} in kpc",
+            f"Merger_Coll_PosZ{i + 1}\t\t{ics.center[i][2].v}\t# Z-center of cluster {i + 1} in kpc",
             f"Merger_Coll_VelX{i + 1}\t\t{vel[0]}\t# X-velocity of cluster {i + 1} in km/s",
             f"Merger_Coll_VelY{i + 1}\t\t{vel[1]}\t# Y-velocity of cluster {i + 1} in km/s",
+            f"Merger_Coll_VelZ{i + 1}\t\t{vel[2]}\t# Z-velocity of cluster {i + 1} in km/s",
         ]
     mylog.info("Write the following lines to Input__TestProblem: ")
     for line in outlines:
@@ -370,6 +372,7 @@ def _lloyd_relax(
     tol=1e-3,
     grid_oversample=8,
     density_func=None,
+    step_damping=0.5,
 ):
     r"""
     Relax particle positions using Lloyd's algorithm for a non-periodic box.
@@ -430,17 +433,34 @@ def _lloyd_relax(
         distributions such as galaxy clusters; without it, the relaxation
         pushes dense-core particles outward.  When ``None``, all weights are
         equal (geometric centroid). Default: None
+    step_damping : float, optional
+        Fraction of the centroid displacement to apply each iteration,
+        in ``(0, 1]``.  A value of 1.0 gives the classic Lloyd full step.
+        Values smaller than 1 damp overshooting when centroid estimates are
+        noisy (e.g. with a coarse grid) and match the behaviour of AREPO's
+        ``CellShapingSpeed`` parameter (default 0.5 in AREPO).
+        Default: 0.5
 
     Returns
     -------
-    numpy.ndarray, shape (N, 3)
+    pos : numpy.ndarray, shape (N, 3)
         Relaxed positions, clipped to ``[0, boxsize]``\ :sup:`3`.
+    vol_estimates : numpy.ndarray, shape (N,)
+        Approximate Voronoi cell volumes in kpc\ :sup:`3`, estimated from
+        the full-resolution grid by counting how many grid points each
+        particle owns.  Pass these to ``setup_arepo_ics`` / ``relax_arepo_ics``
+        so that particle masses are set as ``mass = density × vol_estimates``,
+        ensuring AREPO's startup computation of
+        ``density = mass / vol_voronoi`` reproduces the analytic profile.
 
     Notes
     -----
-    For very large particle counts (> ~10\ :sup:`6`) use a higher
-    ``grid_oversample`` for better centroid accuracy, or use AREPO's
-    built-in ``MESHRELAX``.
+    AREPO ignores the ``Density`` field in the HDF5 IC file and always
+    initialises cell density as ``mass / vol_voronoi`` at startup
+    (``init.c``).  The ``vol_estimates`` return value is therefore critical:
+    without correct mass assignment the resampled density profile will
+    differ from the analytic profile by the ratio of old to new Voronoi
+    volumes, generating pressure waves as soon as the simulation starts.
     """
     pos = np.asarray(positions, dtype=float).copy()
     n = len(pos)
@@ -502,10 +522,15 @@ def _lloyd_relax(
 
             wsum = np.bincount(nearest, weights=grid_weights, minlength=n).astype(float)
             valid = wsum > 0
-            new_pos = pos.copy()
+            # Compute density-weighted centroid for each particle.
+            centroid = pos.copy()
             for d in range(3):
                 sums = np.bincount(nearest, weights=grid_weights * grid_pts[:, d], minlength=n)
-                new_pos[valid, d] = sums[valid] / wsum[valid]
+                centroid[valid, d] = sums[valid] / wsum[valid]
+            # Apply step damping: move only step_damping fraction toward centroid.
+            # Matches AREPO's CellShapingSpeed parameter (default 0.5), which
+            # prevents overshooting when centroid estimates are noisy.
+            new_pos = pos + step_damping * (centroid - pos)
             new_pos = np.clip(new_pos, 0.0, boxsize)
 
             max_disp = np.max(np.linalg.norm(new_pos - pos, axis=1))
@@ -534,7 +559,33 @@ def _lloyd_relax(
                         len(grid_pts),
                     )
 
-        return pos
+        # Compute Voronoi volume estimates from the full-resolution grid.
+        # AREPO ignores the Density field and always sets density = mass/vol_voronoi
+        # at startup.  Returning these estimates lets the caller set masses as
+        # mass = density × vol_estimate, so mass/vol_voronoi ≈ analytic_density.
+        # Always use the full-resolution grid for the best volume accuracy,
+        # even if convergence happened during a coarser phase.
+        if current_os < grid_oversample:
+            grid_pts_final, _ = _build_grid(grid_oversample)
+        else:
+            grid_pts_final = grid_pts  # already at full resolution
+        if _HAVE_NUMBA:
+            bp, bo, nb_f, bs_f = _build_bucket_structure(pos, boxsize)
+            nearest_final = _nb_find_nearest(grid_pts_final, pos, bp, bo, nb_f, bs_f)
+        else:
+            from scipy.spatial import KDTree
+
+            _, nearest_final = KDTree(pos).query(grid_pts_final, workers=-1)
+            nearest_final = nearest_final.astype(np.int64)
+        grid_n_final = max(2, int(round((grid_oversample * n) ** (1.0 / 3.0))))
+        grid_dx = boxsize / grid_n_final
+        vol_estimates = np.bincount(nearest_final, minlength=n).astype(float) * grid_dx**3
+        mylog.info(
+            "Lloyd's grid: volume estimates computed (grid_dx=%.3f kpc, median vol=%.3e kpc^3).",
+            grid_dx,
+            float(np.median(vol_estimates)),
+        )
+        return pos, vol_estimates
 
     raise ValueError(f"Unknown method {method!r}. Only 'grid' is supported.")
 
@@ -550,6 +601,7 @@ def setup_arepo_ics(
     lloyd_method="grid",
     lloyd_tol=1e-3,
     grid_oversample=8,
+    lloyd_damping=0.5,
     prng=None,
 ):
     r"""
@@ -596,6 +648,10 @@ def setup_arepo_ics(
         Number of grid points per particle for the ``'grid'`` backend.
         Higher values improve centroid accuracy at greater cost.
         Use 8 (default) for speed or 64 for production-quality ICs.
+    lloyd_damping : float, optional
+        Step-damping factor for Lloyd's relaxation (fraction of centroid
+        displacement applied per iteration).  Matches AREPO's
+        ``CellShapingSpeed`` parameter.  Default: 0.5
     prng : int, numpy.random.RandomState, or None, optional
         Pseudo-random number generator seed or state. Default: None
     """
@@ -636,7 +692,7 @@ def setup_arepo_ics(
             num_lloyd_iterations,
         )
         density_func = _make_density_func(ics, bkg_density.value)
-        gas_pos = _lloyd_relax(
+        gas_pos, vol_estimates = _lloyd_relax(
             gas_pos,
             boxsize,
             num_iterations=num_lloyd_iterations,
@@ -644,9 +700,17 @@ def setup_arepo_ics(
             tol=lloyd_tol,
             grid_oversample=grid_oversample,
             density_func=density_func,
+            step_damping=lloyd_damping,
         )
         new_parts["gas", "particle_position"] = unyt_array(gas_pos, "kpc")
-        new_parts = ics.resample_particle_ics(new_parts, recalc_mass=True, bkg_density=bkg_density.value)
+        # Resample density, thermal energy, and velocity from analytic profiles.
+        new_parts = ics.resample_particle_ics(new_parts, recalc_mass=False, bkg_density=bkg_density.value)
+        # Set masses from grid volume estimates so that AREPO's startup
+        # calculation of density = mass/vol_voronoi matches the analytic profile.
+        # (AREPO ignores the Density field in the IC file; it always recomputes
+        # density from mass/vol_voronoi at initialisation.)
+        density_arr = new_parts["gas", "density"].to_value("Msun/kpc**3")
+        new_parts["gas", "particle_mass"] = unyt_array(density_arr * vol_estimates, "Msun")
 
     new_parts.write_to_gadget_file(ic_file, boxsize, overwrite=overwrite, code="arepo")
 
@@ -669,6 +733,7 @@ def relax_arepo_ics(
     lloyd_method="grid",
     lloyd_tol=1e-3,
     grid_oversample=8,
+    lloyd_damping=0.5,
     overwrite=False,
 ):
     r"""
@@ -709,6 +774,10 @@ def relax_arepo_ics(
         Number of grid points per particle for the ``'grid'`` backend.
         Higher values improve centroid accuracy at greater cost.
         Use 8 (default) for speed or 64 for production-quality ICs.
+    lloyd_damping : float, optional
+        Step-damping factor for Lloyd's relaxation (fraction of centroid
+        displacement applied per iteration).  Matches AREPO's
+        ``CellShapingSpeed`` parameter.  Default: 0.5
     overwrite : bool, optional
         Overwrite ``outfile`` if it already exists. Default: False
 
@@ -729,7 +798,7 @@ def relax_arepo_ics(
         len(gas_pos),
         num_iterations,
     )
-    gas_pos = _lloyd_relax(
+    gas_pos, vol_estimates = _lloyd_relax(
         gas_pos,
         boxsize,
         num_iterations=num_iterations,
@@ -737,10 +806,13 @@ def relax_arepo_ics(
         tol=lloyd_tol,
         grid_oversample=grid_oversample,
         density_func=_make_density_func(ics, bkg_density.value),
+        step_damping=lloyd_damping,
     )
     parts["gas", "particle_position"] = unyt_array(gas_pos, "kpc")
 
-    new_parts = ics.resample_particle_ics(parts, bkg_density=bkg_density.value)
+    new_parts = ics.resample_particle_ics(parts, recalc_mass=False, bkg_density=bkg_density.value)
+    density_arr = new_parts["gas", "density"].to_value("Msun/kpc**3")
+    new_parts["gas", "particle_mass"] = unyt_array(density_arr * vol_estimates, "Msun")
     new_parts.write_to_gadget_file(outfile, boxsize, overwrite=overwrite, code="arepo")
 
 
