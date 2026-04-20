@@ -70,7 +70,7 @@ class RadialProfile:
         return RadialProfile(_cutoff)
 
     @classmethod
-    def from_array(cls, r, f_r):
+    def from_array(cls, r, f_r, **kwargs):
         """
         Generate a callable radial profile using an array of radii
         and an array of values.
@@ -82,9 +82,9 @@ class RadialProfile:
         f_r : array-like
             Array of profile values in the appropriate units.
         """
-        from scipy.interpolate import UnivariateSpline
+        from scipy.interpolate import make_interp_spline
 
-        f = UnivariateSpline(r, f_r)
+        f = make_interp_spline(r, f_r, **kwargs)
         return cls(f)
 
     def plot(self, rmin, rmax, num_points=1000, fig=None, ax=None, lw=2, **kwargs):
