@@ -45,9 +45,12 @@ def parse_value(value, default_units):
     Parameters
     ----------
     value : array-like or tuple
-        The array from which to convert values to correct units. If ``value`` is a ``unyt_array``, the unit is simply converted,
-        if ``value`` is a tuple in the form ``(v_array,v_unit)``, the conversion will be made and will return an ``unyt_array``.
-        Finally, if ``value`` is an array, it is assumed that the ``default_units`` are correct.
+        The array from which to convert values to correct units.
+        If ``value`` is a ``unyt_array``, the unit is simply converted,
+        if ``value`` is a tuple in the form ``(v_array,v_unit)``,
+        the conversion will be made and will return an ``unyt_array``.
+        Finally, if ``value`` is an array, it is assumed that the
+        ``default_units`` are correct.
     default_units : str
         The default unit for the quantity.
     Returns
@@ -150,9 +153,9 @@ class ClusterField:
         kx[kx > nx // 2] = kx[kx > nx // 2] - nx
         ky[ky > ny // 2] = ky[ky > ny // 2] - ny
         kz[kz > nz // 2] = kz[kz > nz // 2] - nz
-        kx /= (nx * self.dx)
-        ky /= (ny * self.dy)
-        kz /= (nz * self.dz)
+        kx /= nx * self.dx
+        ky /= ny * self.dy
+        kz /= nz * self.dz
         self.kx = kx
         self.ky = ky
         self.kz = kz
@@ -230,10 +233,8 @@ class ClusterField:
             alpha = np.arccos(
                 self.kx[:, np.newaxis, np.newaxis]
                 / np.sqrt(
-                    self.kx[:, np.newaxis, np.newaxis]
-                    * self.kx[:, np.newaxis, np.newaxis]
-                    + self.ky[np.newaxis, :, np.newaxis]
-                    * self.ky[np.newaxis, :, np.newaxis]
+                    self.kx[:, np.newaxis, np.newaxis] * self.kx[:, np.newaxis, np.newaxis]
+                    + self.ky[np.newaxis, :, np.newaxis] * self.ky[np.newaxis, :, np.newaxis]
                 )
             )
         alpha[self.ky[np.newaxis, :, np.newaxis] < 0.0] -= 2.0 * np.pi
@@ -307,7 +308,7 @@ class ClusterField:
         if length_unit is None:
             length_unit = "kpc"
         if os.path.exists(filename) and not overwrite:
-            raise IOError(f"Cannot create {filename}. It exists and overwrite=False.")
+            raise OSError(f"Cannot create {filename}. It exists and overwrite=False.")
         all_comps = ["x", "y", "z"] + self.comps
         if format == "hdf5":
             write_class = h5py.File
@@ -366,9 +367,7 @@ class ClusterField:
                 fill_value=0.0,
             )
             v[:, i] = func(cluster_particles[ptype, "particle_position"].d)
-        cluster_particles.set_field(
-            ptype, self._name, unyt_array(v, self.units), units=units
-        )
+        cluster_particles.set_field(ptype, self._name, unyt_array(v, self.units), units=units)
 
 
 class GaussianRandomField(ClusterField):
@@ -401,63 +400,11 @@ class GaussianRandomField(ClusterField):
         self.g_rms = parse_value(g_rms, self._units).v
 
     def _compute_pspec(self):
-        sigma = compute_pspec(
-            self.kx, self.ky, self.kz, self.k0, self.k1, self.alpha, self.ddims
-        )
-        k0 = 1.0 / self.l_min
-        k1 = 1.0 / self.l_max
+        sigma = compute_pspec(self.kx, self.ky, self.kz, self.k0, self.k1, self.alpha, self.ddims)
         return sigma
 
     def _generate_field(self, sigma=None):
-        nx, ny, nz = self.ddims
-
-        v = self.prng.normal(size=(3, nx, ny, nz)) + 1j * self.prng.normal(
-            size=(3, nx, ny, nz)
-        )
-
-        real_points = [
-            (0, 0, 0),
-            (nx // 2, ny // 2, nz // 2),
-            (0, ny // 2, nz // 2),
-            (nx // 2, 0, nz // 2),
-            (nx // 2, ny // 2, 0),
-            (0, 0, nz // 2),
-            (0, ny // 2, 0),
-            (nx // 2, 0, 0),
-        ]
-
-        v[:, real_points].real *= sqrt2
-        v[:, real_points].imag = 0.0
-
-        v[:, nx - 1 : 0 : -1, ny - 1 : 0 : -1, nz - 1 : nz // 2 : -1] = np.conj(
-            v[:, 1:nx, 1:ny, 1 : nz // 2]
-        )
-        v[:, nx - 1 : 0 : -1, ny - 1 : ny // 2 : -1, nz // 2] = np.conj(
-            v[:, 1:nx, 1 : ny // 2, nz // 2]
-        )
-        v[:, nx - 1 : 0 : -1, ny - 1 : ny // 2 : -1, 0] = np.conj(
-            v[:, 1:nx, 1 : ny // 2, 0]
-        )
-        v[:, nx - 1 : 0 : -1, 0, nz - 1 : nz // 2 : -1] = np.conj(
-            v[:, 1:nx, 0, 1 : nz // 2]
-        )
-        v[:, 0, ny - 1 : 0 : -1, nz - 1 : nz // 2 : -1] = np.conj(
-            v[:, 0, 1:ny, 1 : nz // 2]
-        )
-        v[:, nx - 1 : nx // 2 : -1, ny // 2, nz // 2] = np.conj(
-            v[:, 1 : nx // 2, ny // 2, nz // 2]
-        )
-        v[:, nx - 1 : nx // 2 : -1, ny // 2, 0] = np.conj(v[:, 1 : nx // 2, ny // 2, 0])
-        v[:, nx - 1 : nx // 2 : -1, 0, nz // 2] = np.conj(v[:, 1 : nx // 2, 0, nz // 2])
-        v[:, 0, ny - 1 : ny // 2 : -1, nz // 2] = np.conj(v[:, 0, 1 : ny // 2, nz // 2])
-        v[:, nx - 1 : nx // 2 : -1, 0, 0] = np.conj(v[:, 1 : nx // 2, 0, 0])
-        v[:, 0, ny - 1 : ny // 2 : -1, 0] = np.conj(v[:, 0, 1 : ny // 2, 0])
-        v[:, 0, 0, nz - 1 : nz // 2 : -1] = np.conj(v[:, 0, 0, 1 : nz // 2])
-
-        if sigma is None:
-            sigma = self._compute_pspec()
-
-        self.gx, self.gy, self.gz = np.fft.ifftn(0.5 * sigma * v, axes=(1, 2, 3)).real
+        pass
 
     def _post_generate(self):
         g_avg = self.g_rms / np.sqrt(np.mean(self.gg()))
@@ -505,13 +452,7 @@ class RadialRandomField(GaussianRandomField):
             r1 = profile1["radius"].to_value("kpc")
             g1 = profile1[field]
         elif isinstance(profile1, str):
-            r1 = (
-                unyt_array.from_hdf5(
-                    profile1, dataset_name="radius", group_name="fields"
-                )
-                .to("kpc")
-                .d
-            )
+            r1 = unyt_array.from_hdf5(profile1, dataset_name="radius", group_name="fields").to("kpc").d
             g1 = unyt_array.from_hdf5(profile1, dataset_name=field, group_name="fields")
         else:
             r1, g1 = profile1
@@ -522,13 +463,7 @@ class RadialRandomField(GaussianRandomField):
                 r2 = profile2["radius"].to_value("kpc")
                 g2 = profile2[field]
             elif isinstance(profile2, str):
-                r2 = (
-                    unyt_array.from_hdf5(
-                        profile2, dataset_name="radius", group_name="fields"
-                    )
-                    .to("kpc")
-                    .d
-                )
+                r2 = unyt_array.from_hdf5(profile2, dataset_name="radius", group_name="fields").to("kpc").d
                 g2 = unyt_array.from_hdf5(
                     profile2,
                     dataset_name=field,
@@ -547,13 +482,7 @@ class RadialRandomField(GaussianRandomField):
                 r3 = profile3["radius"].to_value("kpc")
                 g3 = profile3[field]
             elif isinstance(profile3, str):
-                r3 = (
-                    unyt_array.from_hdf5(
-                        profile3, dataset_name="radius", group_name="fields"
-                    )
-                    .to("kpc")
-                    .d
-                )
+                r3 = unyt_array.from_hdf5(profile3, dataset_name="radius", group_name="fields").to("kpc").d
                 g3 = unyt_array.from_hdf5(
                     profile3,
                     dataset_name=field,
@@ -608,7 +537,7 @@ class RadialRandomField(GaussianRandomField):
             idxs = np.searchsorted(self.r3, rr) - 1
             dr = (rr - self.r3[idxs]) / (self.r3[idxs + 1] - self.r3[idxs])
             g_rms += ((1.0 - dr) * self.g3[idxs] + dr * self.g3[idxs + 1]) ** 2
-        g_rms = np.sqrt(g_rms).in_units(self._units).d / g_avg
+            g_rms = np.sqrt(g_rms).in_units(self._units).d / g_avg
 
         self.gx *= g_rms
         self.gy *= g_rms
@@ -646,56 +575,7 @@ class RandomMagneticField(GaussianRandomField):
         )
 
 
-class RadialRandomMagneticField(RadialRandomField):
-    _units = "gauss"
-    _name = "magnetic_field"
-    _vector_potential = False
-    _divergence_clean = True
-
-    def __init__(
-        self,
-        left_edge,
-        right_edge,
-        ddims,
-        l_min,
-        l_max,
-        ctr1,
-        profile1,
-        padding=0.1,
-        ctr2=None,
-        profile2=None,
-        ctr3=None,
-        profile3=None,
-        alpha=-11.0 / 3.0,
-        r_max=None,
-        prng=None,
-    ):
-        super().__init__(
-            left_edge,
-            right_edge,
-            ddims,
-            l_min,
-            l_max,
-            ctr1,
-            profile1,
-            "magnetic_field_strength",
-            padding=padding,
-            alpha=alpha,
-            ctr2=ctr2,
-            ctr3=ctr3,
-            profile2=profile2,
-            profile3=profile3,
-            r_max=r_max,
-            prng=prng,
-        )
-
-
 class RandomMagneticVectorPotential(RandomMagneticField):
-    _name = "magnetic_vector_potential"
-    _vector_potential = True
-
-
-class RadialRandomMagneticVectorPotential(RadialRandomMagneticField):
     _name = "magnetic_vector_potential"
     _vector_potential = True
 
@@ -715,9 +595,7 @@ class RandomVelocityField(GaussianRandomField):
         padding=0.1,
         alpha=-11.0 / 3.0,
         prng=None,
-        divergence_clean=False,
     ):
-        self._divergence_clean = divergence_clean
         super().__init__(
             left_edge,
             right_edge,

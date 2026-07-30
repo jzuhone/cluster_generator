@@ -30,7 +30,7 @@ setup(
     url="https://github.com/jzuhone/cluster_generator",
     download_url="https://github.com/jzuhone/cluster_generator/tarball/0.1.0",
     install_requires=[
-        "numpy<2",
+        "numpy>2.0,<3.0",
         "scipy",
         "yt",
         "unyt",

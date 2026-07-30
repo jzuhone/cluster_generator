@@ -1,6 +1,7 @@
 """
 Pytest suite for unit-testing the particle generation system.
 """
+
 import pytest
 
 from cluster_generator.tests.utils import get_base_model, particle_answer_testing, prng
