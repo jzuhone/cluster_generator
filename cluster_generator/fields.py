@@ -343,7 +343,6 @@ class RandomClusterField(ClusterField):
 
         g *= g_rms
 
-        print(g.shape, self.ddims)
         if self._divergence_clean:
             fa = FourierAnalysis(self.width, self.ddims)
             g = fa.divergence_component(g)
