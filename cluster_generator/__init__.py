@@ -5,11 +5,9 @@ from cluster_generator.codes import (
     setup_ramses_ics,
 )
 from cluster_generator.fields import (
-    RadialRandomMagneticField,
-    RadialRandomMagneticVectorPotential,
-    RandomMagneticField,
-    RandomMagneticVectorPotential,
-    RandomVelocityField,
+    MagneticPotentialRandomClusterField,
+    MagneticRandomClusterField,
+    VelocityRandomClusterField,
 )
 from cluster_generator.ics import ClusterICs, compute_centers_for_binary
 from cluster_generator.model import ClusterModel, HydrostaticEquilibrium
