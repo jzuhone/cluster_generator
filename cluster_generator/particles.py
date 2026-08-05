@@ -597,15 +597,15 @@ def _sample_clusters(
             mylog.warning("No density field found in %s. Skipping.", hse)
             continue
 
-        get_density = InterpolatedUnivariateSpline(hse["radius"], hse["density"])
+        get_density = InterpolatedUnivariateSpline(hse["radius"], hse["density"], ext=3)
         d[i, :] = get_density(r[i, :])
         e_arr = 1.5 * hse["pressure"] / hse["density"]
-        get_energy = InterpolatedUnivariateSpline(hse["radius"], e_arr)
+        get_energy = InterpolatedUnivariateSpline(hse["radius"], e_arr, ext=3)
         e[i, :] = get_energy(r[i, :]) * d[i, :]
         m[i, :, :] = velocity[i].d[:, np.newaxis] * d[i, :]
         if num_scalars > 0:
             for j, name in enumerate(passive_scalars):
-                get_scalar = InterpolatedUnivariateSpline(hse["radius"], hse[name])
+                get_scalar = InterpolatedUnivariateSpline(hse["radius"], hse[name], ext=3)
                 s[i, j, :] = get_scalar(r[i, :]) * d[i, :]
     dens = d.sum(axis=0)
     floor = dens < bkg_density
@@ -727,10 +727,10 @@ def resample_one_cluster(
     velocity = ensure_ytarray(velocity, "kpc/Myr")
     r = ((particles["gas", "particle_position"] - center) ** 2).sum(axis=1).d
     np.sqrt(r, r)
-    get_density = InterpolatedUnivariateSpline(hse["radius"], hse["density"])
+    get_density = InterpolatedUnivariateSpline(hse["radius"], hse["density"], ext=3)
     dens = np.maximum(get_density(r), bkg_density)
     e_arr = 1.5 * hse["pressure"] / hse["density"]
-    get_energy = InterpolatedUnivariateSpline(hse["radius"], e_arr)
+    get_energy = InterpolatedUnivariateSpline(hse["radius"], e_arr, ext=3)
     particles["gas", "thermal_energy"] = unyt_array(get_energy(r), "kpc**2/Myr**2")
     if recalc_mass:
         vol = particles["gas", "particle_mass"] / particles["gas", "density"]
@@ -741,7 +741,7 @@ def resample_one_cluster(
         num_scalars = len(passive_scalars)
         if num_scalars > 0:
             for name in passive_scalars:
-                get_scalar = InterpolatedUnivariateSpline(hse["radius"], hse[name])
+                get_scalar = InterpolatedUnivariateSpline(hse["radius"], hse[name], ext=3)
                 particles["gas", name] = unyt_array(get_scalar(r), "")
     return particles
 

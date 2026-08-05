@@ -38,6 +38,12 @@ setup(
         "ruamel.yaml",
         "h5py",
     ],
+    extras_require={
+        # Exact bounded Voronoi cell volumes for AREPO IC generation
+        # (codes.setup_arepo_ics / relax_arepo_ics).  pyvoro2 wraps voro++
+        # and ships wheels for modern Python.
+        "arepo": ["pyvoro2"],
+    },
     classifiers=[
         "Intended Audience :: Science/Research",
         "Operating System :: OS Independent",
