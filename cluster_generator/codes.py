@@ -488,6 +488,114 @@ def _compute_arepo_masses(
         return density * volume
 
 
+def _setup_gadget_gas_ics(
+    ics,
+    boxsize,
+    nxb,
+    bkg_density,
+    ic_file,
+    code,
+    mass_method,
+    overwrite=False,
+    regenerate_particles=False,
+    num_lloyd_iterations=50,
+    lloyd_tol=1e-3,
+    lloyd_damping=0.5,
+    grid_oversample=8,
+    prng=None,
+):
+    r"""
+    Shared implementation for :func:`setup_arepo_ics` and
+    :func:`setup_gizmo_ics`.
+
+    Samples cluster gas particles, adds an ``nxb**3`` regular-grid background
+    outside ``r_max``, resamples the profiles, and optionally relaxes the whole
+    distribution toward a density-weighted glass with :func:`_lloyd_relax`.
+    ``mass_method`` selects the fluid model:
+
+    * ``None`` (meshless, GIZMO): equal-mass particles (background mass = the
+      cluster gas particle mass).  Density is left to the code's kernel
+      estimate, so there is no volume/mass step and no ``pyvoro2`` dependency.
+    * ``'integrated'`` / ``'point'`` (moving-mesh, AREPO): background mass =
+      ``dx**3 × bkg_density`` (a regular cell then has density ``bkg_density``);
+      after relaxation, masses are set to ``ρ × V_exact`` (exact voro++
+      volumes) via :func:`_compute_arepo_masses`.
+    """
+    prng = parse_prng(prng)
+    bkg_density = unyt_quantity(bkg_density, "g/cm**3").to_value("Msun/kpc**3")
+    mylog.info("Background gas density is %g Msun/kpc**3.", bkg_density)
+
+    parts = ics.setup_particle_ics(regenerate_particles=regenerate_particles, prng=prng)
+    src_particle_mass = parts["gas", "particle_mass"][0].to_value("Msun")
+    mylog.info("Cluster gas particle mass is %g Msun.", src_particle_mass)
+
+    # Regular nxb**3 background grid of cell centres.
+    dx = boxsize / nxb
+    lmin, lmax = 0.5 * dx, boxsize - 0.5 * dx
+    posg = (
+        np.mgrid[lmin : lmax : nxb * 1j, lmin : lmax : nxb * 1j, lmin : lmax : nxb * 1j].reshape(3, nxb**3).T
+    )
+    # Meshless (GIZMO): equal mass to the cluster particles.  Moving-mesh
+    # (AREPO): mass = dx**3 * bkg_density, so a regular cell has density bkg.
+    equal_mass = mass_method is None
+    bkg_particle_mass = src_particle_mass if equal_mass else dx**3 * bkg_density
+    mylog.info("Background grid: %d^3 cells (dx=%g kpc), particle mass %g Msun.", nxb, dx, bkg_particle_mass)
+
+    rmax2 = ics.r_max**2
+    idxs = np.sum((posg - ics.center[0].v) ** 2, axis=1) > rmax2[0]
+    if ics.num_halos > 1:
+        idxs |= np.sum((posg - ics.center[1].v) ** 2, axis=1) > rmax2[1]
+    if ics.num_halos > 2:
+        idxs |= np.sum((posg - ics.center[2].v) ** 2, axis=1) > rmax2[2]
+    nleft = int(idxs.sum())
+    fields = {
+        ("gas", "particle_position"): unyt_array(posg[idxs, :], "kpc"),
+        ("gas", "particle_velocity"): unyt_array(np.zeros((nleft, 3)), "kpc/Myr"),
+        ("gas", "density"): unyt_array(bkg_density * np.ones(nleft), "Msun/kpc**3"),
+        ("gas", "thermal_energy"): unyt_array(np.zeros(nleft), "kpc**2/Myr**2"),
+        ("gas", "particle_mass"): unyt_array(bkg_particle_mass * np.ones(nleft), "Msun"),
+    }
+    parts = parts + ClusterParticles.from_fields(fields)
+    new_parts = ics.resample_particle_ics(parts, bkg_density=bkg_density)
+
+    if num_lloyd_iterations > 0:
+        gas_pos = new_parts["gas", "particle_position"].to_value("kpc")
+        mylog.info(
+            "Relaxing %d gas particles toward a density-weighted glass (%d iterations).",
+            len(gas_pos),
+            num_lloyd_iterations,
+        )
+        density_func = _make_density_func(ics, bkg_density)
+        gas_pos = _lloyd_relax(
+            gas_pos,
+            boxsize,
+            num_iterations=num_lloyd_iterations,
+            tol=lloyd_tol,
+            step_damping=lloyd_damping,
+            density_func=density_func,
+            grid_oversample=grid_oversample,
+        )
+        new_parts["gas", "particle_position"] = unyt_array(gas_pos, "kpc")
+        # Resample density, internal energy, and velocity onto the relaxed
+        # positions (recalc_mass=False keeps the particle masses).
+        new_parts = ics.resample_particle_ics(new_parts, recalc_mass=False, bkg_density=bkg_density)
+        if mass_method is not None:
+            # AREPO ignores the Density field and recomputes density =
+            # mass/vol_voronoi at startup, so set masses = ρ × V_exact.
+            density_arr = new_parts["gas", "density"].to_value("Msun/kpc**3")
+            masses = _compute_arepo_masses(
+                gas_pos,
+                boxsize,
+                density_func,
+                density_arr,
+                mass_method=mass_method,
+                grid_oversample=grid_oversample,
+            )
+            new_parts["gas", "particle_mass"] = unyt_array(masses, "Msun")
+
+    new_parts.write_to_gadget_file(ic_file, boxsize, overwrite=overwrite, code=code)
+
+
 def setup_arepo_ics(
     ics,
     boxsize,
@@ -504,139 +612,75 @@ def setup_arepo_ics(
     prng=None,
 ):
     r"""
-    Generate initial conditions for the AREPO code.
+    Generate initial conditions for the AREPO code (moving-mesh).
 
-    Creates cluster gas particles sampled from the density profile(s) and
-    fills the remainder of the box with a uniform background of equal-mass
-    gas cells. The combined distribution is written to a Gadget-HDF5 file
-    suitable for AREPO. Optionally, the gas cell positions can be relaxed
-    with Lloyd's algorithm before the final file is written.
+    Samples cluster gas cells from the density profile(s), fills the rest of
+    the box with an ``nxb**3`` regular-grid background outside ``r_max``,
+    optionally relaxes the whole mesh toward a density-weighted glass, and
+    assigns masses so AREPO's startup ``density = mass / V_voronoi`` reproduces
+    the analytic profile.  Written as a Gadget-HDF5 file.
 
     Parameters
     ----------
     ics : ClusterICs
-        The :class:`~cluster_generator.ics.ClusterICs` object describing
-        the halo(s).
+        The :class:`~cluster_generator.ics.ClusterICs` object describing the
+        halo(s).
     boxsize : float
         Side length of the cubic box in kpc.
-    nxb : integer
-        The number of cells on a side to compute the background from.
-
+    nxb : int
+        Number of background cells per side (an ``nxb**3`` regular grid).
+        Background cell mass is ``(boxsize/nxb)**3 × bkg_density``.
+    bkg_density : float
+        Uniform background gas density in g/cm**3.
     ic_file : str
         Path for the output Gadget-HDF5 IC file.
-    bkg_density : float
-        Uniform background gas density in g/cm**3.  Background cells are
-        given equal mass to the cluster gas cells.
     overwrite : bool, optional
         Overwrite ``ic_file`` if it already exists. Default: False
     regenerate_particles : bool, optional
         Re-create particle files even if they already exist. Default: False
     num_lloyd_iterations : int, optional
-        Maximum number of Lloyd's algorithm iterations used to regularise
-        the Voronoi mesh before writing the IC file.  Set to 0 (default)
-        to skip relaxation.  Iteration may stop earlier if ``lloyd_tol``
-        is satisfied.  After relaxation the cluster profiles are resampled
-        at the new cell positions.
+        Maximum number of relaxation iterations before writing the IC.  Set to
+        0 to skip relaxation; may stop earlier if ``lloyd_tol`` is satisfied.
+        Default: 50
     lloyd_tol : float or None, optional
-        Convergence tolerance for Lloyd's relaxation, as a fraction of the
-        mean inter-particle spacing.  Iteration stops early when the
-        maximum cell displacement falls below this threshold.  Set to
-        ``None`` to always run all ``num_lloyd_iterations`` steps.
-        Default: 1e-3
+        Convergence tolerance as a fraction of the mean inter-particle spacing;
+        ``None`` runs all iterations. Default: 1e-3
     lloyd_damping : float, optional
-        Step-damping factor for Lloyd's relaxation (fraction of centroid
-        displacement applied per iteration).  Matches AREPO's
-        ``CellShapingSpeed`` parameter.  Default: 0.5
+        Step-damping factor for the relaxation (AREPO ``CellShapingSpeed``).
+        Default: 0.5
     grid_oversample : int, optional
-        Sampling grid points per cell for the streaming Lloyd relaxation and
-        the ``'integrated'`` mass estimate (grid has ``~grid_oversample × N``
-        points).  Higher is more accurate and more expensive. Default: 8
+        Sampling grid points per cell for the streaming relaxation and the
+        ``'integrated'`` mass estimate. Default: 8
     mass_method : {'integrated', 'point'}, optional
-        How the target density enters the exact-Voronoi mass assignment.
-        ``mass = ρ × V_exact`` with the exact voro++ volume; ``'integrated'``
-        (default) uses the cell-averaged density from a streaming grid integral
-        (most accurate in steep gradients such as the cluster core), ``'point'``
-        uses ``ρ(x_i)``.  Exact volumes require ``pyvoro2``.  Default:
-        ``'integrated'``
+        How the target density enters the exact-Voronoi mass assignment
+        (``mass = ρ × V_exact``).  ``'integrated'`` (default) uses the
+        cell-averaged density from a streaming grid integral, ``'point'`` uses
+        ``ρ(x_i)``.  Exact volumes require ``pyvoro2``.  Default: ``'integrated'``
     prng : int, numpy.random.RandomState, or None, optional
         Pseudo-random number generator seed or state. Default: None
     """
-    prng = parse_prng(prng)
-
-    parts = ics.setup_particle_ics(regenerate_particles=regenerate_particles, prng=prng)
-    src_particle_mass = parts["gas", "particle_mass"][0].to_value("Msun")
-    mylog.info("Source particle mass is %g Msun.", src_particle_mass)
-
-    dx = boxsize / nxb
-    dV = dx**3
-    bkg_density = unyt_quantity(bkg_density, "g/cm**3").to_value("Msun/kpc**3")
-    mylog.info("Background cell density is %g Msun/kpc**3.", bkg_density)
-    lmin = 0.5 * dx
-    lmax = boxsize - 0.5 * dx
-    posg = (
-        np.mgrid[lmin : lmax : nxb * 1j, lmin : lmax : nxb * 1j, lmin : lmax : nxb * 1j].reshape(3, nxb**3).T
+    _setup_gadget_gas_ics(
+        ics,
+        boxsize,
+        nxb,
+        bkg_density,
+        ic_file,
+        code="arepo",
+        mass_method=mass_method,
+        overwrite=overwrite,
+        regenerate_particles=regenerate_particles,
+        num_lloyd_iterations=num_lloyd_iterations,
+        lloyd_tol=lloyd_tol,
+        lloyd_damping=lloyd_damping,
+        grid_oversample=grid_oversample,
+        prng=prng,
     )
-    bkg_particle_mass = dV * bkg_density
-    mylog.info("Background particle mass is %g Msun.", bkg_particle_mass)
-    rmax2 = ics.r_max**2
-    idxs = np.sum((posg - ics.center[0].v) ** 2, axis=1) > rmax2[0]
-    if ics.num_halos > 1:
-        idxs |= np.sum((posg - ics.center[1].v) ** 2, axis=1) > rmax2[1]
-    if ics.num_halos > 2:
-        idxs |= np.sum((posg - ics.center[2].v) ** 2, axis=1) > rmax2[2]
-    nleft = idxs.sum()
-    fields = {
-        ("gas", "particle_position"): unyt_array(posg[idxs, :], "kpc"),
-        ("gas", "particle_velocity"): unyt_array(np.zeros((nleft, 3)), "kpc/Myr"),
-        ("gas", "density"): unyt_array(bkg_density * np.ones(nleft), "Msun/kpc**3"),
-        ("gas", "thermal_energy"): unyt_array(np.zeros(nleft), "kpc**2/Myr**2"),
-        ("gas", "particle_mass"): unyt_array(bkg_particle_mass * np.ones(nleft), "Msun"),
-    }
-    parts = parts + ClusterParticles.from_fields(fields)
-    new_parts = ics.resample_particle_ics(parts, bkg_density=bkg_density)
-
-    if num_lloyd_iterations > 0:
-        gas_pos = new_parts["gas", "particle_position"].to_value("kpc")
-        mylog.info(
-            "Relaxing %d gas cells using Lloyd's algorithm (%d iterations).",
-            len(gas_pos),
-            num_lloyd_iterations,
-        )
-        density_func = _make_density_func(ics, bkg_density)
-        gas_pos = _lloyd_relax(
-            gas_pos,
-            boxsize,
-            num_iterations=num_lloyd_iterations,
-            tol=lloyd_tol,
-            step_damping=lloyd_damping,
-            density_func=density_func,
-            grid_oversample=grid_oversample,
-        )
-        new_parts["gas", "particle_position"] = unyt_array(gas_pos, "kpc")
-        # Resample density, thermal energy, and velocity from analytic profiles.
-        new_parts = ics.resample_particle_ics(new_parts, recalc_mass=False, bkg_density=bkg_density)
-        # Set masses so that AREPO's startup calculation of
-        # density = mass/vol_voronoi matches the analytic profile.  (AREPO
-        # ignores the Density field in the IC file; it always recomputes
-        # density from mass/vol_voronoi at initialisation.)  See
-        # _compute_arepo_masses for the mass_method options.
-        density_arr = new_parts["gas", "density"].to_value("Msun/kpc**3")
-        masses = _compute_arepo_masses(
-            gas_pos,
-            boxsize,
-            density_func,
-            density_arr,
-            mass_method=mass_method,
-            grid_oversample=grid_oversample,
-        )
-        new_parts["gas", "particle_mass"] = unyt_array(masses, "Msun")
-
-    new_parts.write_to_gadget_file(ic_file, boxsize, overwrite=overwrite, code="arepo")
 
 
 def setup_gizmo_ics(
     ics,
     boxsize,
+    nxb,
     bkg_density,
     ic_file,
     overwrite=False,
@@ -659,7 +703,7 @@ def setup_gizmo_ics(
     path uses no exact Voronoi volumes and does not require ``pyvoro2``).
 
     Cluster gas particles (equal mass, sampled ``∝ ρ``) are combined with an
-    equal-mass background filling the box outside ``r_max``, and the whole
+    ``nxb**3`` equal-mass background grid outside ``r_max``, and the whole
     distribution is relaxed toward a density-weighted centroidal-Voronoi
     ("weighted-Voronoi-tessellation") glass with :func:`_lloyd_relax`, which
     minimises the particle-configuration noise that meshless/SPH density and
@@ -670,15 +714,19 @@ def setup_gizmo_ics(
     Parameters
     ----------
     ics : ClusterICs
-        The :class:`~cluster_generator.ics.ClusterICs` object describing
-        the halo(s).
+        The :class:`~cluster_generator.ics.ClusterICs` object describing the
+        halo(s).
     boxsize : float
         Side length of the cubic box in kpc.
+    nxb : int
+        Number of background particles per side (an ``nxb**3`` regular grid).
+        Background particles are equal-mass to the cluster gas particles, so
+        their *number* density is ``1 / (boxsize/nxb)**3``.  For a background
+        whose kernel density matches ``bkg_density``, pick
+        ``nxb ≈ boxsize × (bkg_density / m_gas)**(1/3)``.
     bkg_density : float
-        Uniform background gas density in g/cm**3.  Sets the background
-        *number* density (equal-mass particles), so background cells blend
-        smoothly with the cluster sampling where the profile falls to this
-        floor near ``r_max``.
+        Uniform background gas density in g/cm**3 (the profile floor used when
+        resampling and density-weighting the relaxation).
     ic_file : str
         Path for the output Gadget-HDF5 IC file.
     overwrite : bool, optional
@@ -704,67 +752,22 @@ def setup_gizmo_ics(
     HSE is not exact on the meshless discretisation; a short GIZMO settling
     run with velocity damping typically removes any residual startup motions.
     """
-    prng = parse_prng(prng)
-    bkg_density = unyt_quantity(bkg_density, "g/cm**3").to_value("Msun/kpc**3")
-    mylog.info("Background gas density is %g Msun/kpc**3.", bkg_density)
-
-    parts = ics.setup_particle_ics(regenerate_particles=regenerate_particles, prng=prng)
-    src_particle_mass = parts["gas", "particle_mass"][0].to_value("Msun")
-    mylog.info("Gas particle mass is %g Msun.", src_particle_mass)
-
-    # Equal-mass background on a regular grid: number density = bkg/m0, so the
-    # grid spacing satisfies dx**3 = m0 / bkg_density.  All particles share the
-    # same mass (what MFM/MFV want); the grid resolution follows from that.
-    nxb = max(1, int(round(boxsize / (src_particle_mass / bkg_density) ** (1.0 / 3.0))))
-    dx = boxsize / nxb
-    lmin, lmax = 0.5 * dx, boxsize - 0.5 * dx
-    posg = (
-        np.mgrid[lmin : lmax : nxb * 1j, lmin : lmax : nxb * 1j, lmin : lmax : nxb * 1j].reshape(3, nxb**3).T
+    _setup_gadget_gas_ics(
+        ics,
+        boxsize,
+        nxb,
+        bkg_density,
+        ic_file,
+        code="gizmo",
+        mass_method=None,
+        overwrite=overwrite,
+        regenerate_particles=regenerate_particles,
+        num_lloyd_iterations=num_lloyd_iterations,
+        lloyd_tol=lloyd_tol,
+        lloyd_damping=lloyd_damping,
+        grid_oversample=grid_oversample,
+        prng=prng,
     )
-    mylog.info("Background grid: %d^3 cells, spacing %g kpc.", nxb, dx)
-
-    rmax2 = ics.r_max**2
-    idxs = np.sum((posg - ics.center[0].v) ** 2, axis=1) > rmax2[0]
-    if ics.num_halos > 1:
-        idxs |= np.sum((posg - ics.center[1].v) ** 2, axis=1) > rmax2[1]
-    if ics.num_halos > 2:
-        idxs |= np.sum((posg - ics.center[2].v) ** 2, axis=1) > rmax2[2]
-    nleft = int(idxs.sum())
-    fields = {
-        ("gas", "particle_position"): unyt_array(posg[idxs, :], "kpc"),
-        ("gas", "particle_velocity"): unyt_array(np.zeros((nleft, 3)), "kpc/Myr"),
-        ("gas", "density"): unyt_array(bkg_density * np.ones(nleft), "Msun/kpc**3"),
-        ("gas", "thermal_energy"): unyt_array(np.zeros(nleft), "kpc**2/Myr**2"),
-        # Equal mass to the cluster gas particles (meshless: no volume weighting).
-        ("gas", "particle_mass"): unyt_array(src_particle_mass * np.ones(nleft), "Msun"),
-    }
-    parts = parts + ClusterParticles.from_fields(fields)
-    new_parts = ics.resample_particle_ics(parts, bkg_density=bkg_density)
-
-    if num_lloyd_iterations > 0:
-        gas_pos = new_parts["gas", "particle_position"].to_value("kpc")
-        mylog.info(
-            "Relaxing %d gas particles toward a density-weighted glass (%d iterations).",
-            len(gas_pos),
-            num_lloyd_iterations,
-        )
-        density_func = _make_density_func(ics, bkg_density)
-        gas_pos = _lloyd_relax(
-            gas_pos,
-            boxsize,
-            num_iterations=num_lloyd_iterations,
-            tol=lloyd_tol,
-            step_damping=lloyd_damping,
-            density_func=density_func,
-            grid_oversample=grid_oversample,
-        )
-        new_parts["gas", "particle_position"] = unyt_array(gas_pos, "kpc")
-        # Resample density, internal energy, and velocity onto the relaxed
-        # positions.  recalc_mass=False keeps the equal particle masses — GIZMO
-        # reconstructs density from the kernel, so no mass/volume step is needed.
-        new_parts = ics.resample_particle_ics(new_parts, recalc_mass=False, bkg_density=bkg_density)
-
-    new_parts.write_to_gadget_file(ic_file, boxsize, overwrite=overwrite, code="gizmo")
 
 
 def setup_art_ics(ics):
