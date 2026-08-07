@@ -10,3 +10,4 @@ docs/build
 .idea
 *.h5
 build
+cluster_generator/__pycache__
