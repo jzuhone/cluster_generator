@@ -780,7 +780,8 @@ def refinement_regions_for_clusters(
     regions = []
     for center, profile, wf, rb in zip(centers, profiles, width_fracs, refine_bys, strict=True):
         r, g = _load_radial_profile(profile, profile_field)
-        g = np.abs(g.d)
+        r = parse_value(r, "kpc").v
+        g = np.abs(g.d if hasattr(g, "d") else np.asarray(g))
         if r_max is not None:
             keep = r <= r_max
             r, g = r[keep], g[keep]
