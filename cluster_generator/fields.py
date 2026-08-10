@@ -95,6 +95,43 @@ def _load_radial_profile(profile, profile_field):
     return r, g
 
 
+def _check_no_overlap(regions):
+    r"""
+    Raise a clear error if any two refinement regions overlap.
+
+    Each region is approximated as a sphere of radius ``width/2`` centered
+    on ``center``; two regions overlap if their centers are closer together
+    than the sum of those radii. ``RandomClusterField``'s patch combination
+    (see ``_interpolate_at_points``) assumes non-overlapping regions -- for
+    an overlapping pair, a query point in the overlap only ever sees
+    whichever region happens to come first in the list, silently ignoring
+    the other one there.
+
+    Parameters
+    ----------
+    regions : list of dict
+        A ``refinement_regions`` list, each with "center" and "width" keys.
+    """
+    n = len(regions)
+    for i in range(n):
+        ci = np.asarray(parse_value(regions[i]["center"], "kpc").v)
+        wi = regions[i]["width"]
+        for j in range(i + 1, n):
+            cj = np.asarray(parse_value(regions[j]["center"], "kpc").v)
+            wj = regions[j]["width"]
+            dist = np.linalg.norm(ci - cj)
+            min_sep = 0.5 * (wi + wj)
+            if dist < min_sep:
+                raise ValueError(
+                    f"refinement_regions {i} and {j} overlap: their centers are "
+                    f"{dist:.1f} kpc apart, but widths {wi:.1f} and {wj:.1f} kpc "
+                    f"require at least {min_sep:.1f} kpc of separation. Shrink "
+                    "their widths, move the clusters apart, or build the list "
+                    "with refinement_regions_for_clusters(), which avoids this "
+                    "automatically."
+                )
+
+
 class ClusterField:
     """
     Parameters
@@ -600,6 +637,7 @@ class RandomClusterField(ClusterField):
         )
 
     def _generate_patches(self):
+        _check_no_overlap(self.refinement_regions)
         mylog.info("Generating %d refinement patch(es).", len(self.refinement_regions))
         self.patches = [
             self._generate_patch(region, seed)
@@ -695,6 +733,60 @@ class VelocityRandomClusterField(RandomClusterField):
         )
 
 
+def _shrink_widths_to_avoid_overlap(centers, widths, margin):
+    r"""
+    Shrink patch widths, pairwise, so that no two of the (spherical
+    approximations of the) regions in ``centers``/``widths`` overlap,
+    leaving ``margin`` as a fractional buffer on top of that. Widths only
+    ever shrink, never grow, and clusters that never conflict with another
+    are left untouched.
+
+    Parameters
+    ----------
+    centers : list of ndarray
+        Cluster centers [kpc].
+    widths : list of float
+        Initial (pre-overlap-avoidance) widths [kpc], one per center.
+    margin : float
+        Fractional buffer subtracted from each pairwise center-to-center
+        distance before comparing against the sum of half-widths.
+
+    Returns
+    -------
+    list of float
+        The (possibly shrunk) widths.
+    """
+    n = len(centers)
+    widths = list(widths)
+    for _pass in range(n + 1):
+        changed = False
+        for i in range(n):
+            for j in range(i + 1, n):
+                dist = np.linalg.norm(centers[i] - centers[j])
+                allowed_sum = max(dist * (1.0 - margin), 0.0)
+                total = widths[i] + widths[j]
+                if total > allowed_sum:
+                    scale = allowed_sum / total if total > 0 else 0.0
+                    new_i, new_j = widths[i] * scale, widths[j] * scale
+                    mylog.info(
+                        "refinement_regions_for_clusters: clusters %d and %d are "
+                        "%.1f kpc apart; shrinking their widths from (%.1f, %.1f) "
+                        "to (%.1f, %.1f) kpc to avoid overlap.",
+                        i,
+                        j,
+                        dist,
+                        widths[i],
+                        widths[j],
+                        new_i,
+                        new_j,
+                    )
+                    widths[i], widths[j] = new_i, new_j
+                    changed = True
+        if not changed:
+            break
+    return widths
+
+
 def refinement_regions_for_clusters(
     centers,
     profiles,
@@ -705,6 +797,7 @@ def refinement_regions_for_clusters(
     taper_alpha=0.3,
     r_max=None,
     max_width=None,
+    overlap_margin=0.1,
 ):
     r"""
     Build a ``refinement_regions`` list (see :class:`RandomClusterField`) with
@@ -755,6 +848,13 @@ def refinement_regions_for_clusters(
         If given, cap every computed width at this value [kpc] (a hard
         safety limit, applied after ``width_frac``/``r_max``). Default:
         None (no cap).
+    overlap_margin : float, optional
+        After sizing, widths are shrunk (pairwise, never grown) so that no
+        two regions overlap -- clusters close together relative to their
+        computed widths get smaller patches instead of colliding. This is
+        the fractional buffer left on top of that, e.g. 0.1 keeps regions
+        at least 10% farther apart than the bare minimum. A shrink is
+        logged whenever it happens. Default: 0.1.
 
     Returns
     -------
@@ -776,9 +876,10 @@ def refinement_regions_for_clusters(
 
     width_fracs = _broadcast(width_frac, "width_frac")
     refine_bys = _broadcast(refine_by, "refine_by")
+    centers_kpc = [np.asarray(parse_value(c, "kpc").v) for c in centers]
 
-    regions = []
-    for center, profile, wf, rb in zip(centers, profiles, width_fracs, refine_bys, strict=True):
+    widths = []
+    for profile, wf in zip(profiles, width_fracs, strict=True):
         r, g = _load_radial_profile(profile, profile_field)
         r = parse_value(r, "kpc").v
         g = np.abs(g.d if hasattr(g, "d") else np.asarray(g))
@@ -791,6 +892,20 @@ def refinement_regions_for_clusters(
         width = 2.0 * r[idx]
         if max_width is not None:
             width = min(width, max_width)
+        widths.append(width)
+
+    widths = _shrink_widths_to_avoid_overlap(centers_kpc, widths, overlap_margin)
+
+    regions = []
+    for center, width, rb in zip(centers, widths, refine_bys, strict=True):
+        if width <= 0:
+            mylog.warning(
+                "refinement_regions_for_clusters: dropping the region at %s -- "
+                "its width shrank to zero avoiding overlap with another cluster "
+                "(they may coincide).",
+                center,
+            )
+            continue
         regions.append(
             {
                 "center": center,
