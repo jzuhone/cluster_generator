@@ -63,6 +63,38 @@ def parse_value(value, default_units):
     return val
 
 
+def _load_radial_profile(profile, profile_field):
+    r"""
+    Load a radial profile from a :class:`~cluster_generator.model.ClusterModel`,
+    an HDF5 filename, or an ``(r, g)`` array-like pair.
+
+    Parameters
+    ----------
+    profile : ClusterModel, string, or (r, g) array-like
+        The source of the profile.
+    profile_field : str
+        The name of the field to read (e.g. "magnetic_field_strength").
+    units : str
+        The units to convert the field values to.
+
+    Returns
+    -------
+    r : ndarray
+        Radii [kpc].
+    g : unyt_array
+        The field values, in ``units``.
+    """
+    if isinstance(profile, ClusterModel):
+        r = profile["radius"].to_value("kpc")
+        g = profile[profile_field]
+    elif isinstance(profile, str):
+        r = unyt_array.from_hdf5(profile, dataset_name="radius", group_name="fields").to("kpc").d
+        g = unyt_array.from_hdf5(profile, dataset_name=profile_field, group_name="fields")
+    else:
+        r, g = profile
+    return r, g
+
+
 class ClusterField:
     """
     Parameters
@@ -211,6 +243,7 @@ class ClusterField:
                 f.attrs["units"] = self.units
                 f.attrs["vector_potential"] = int(self._vector_potential)
                 f.attrs["divergence_clean"] = int(self._divergence_clean)
+                f.attrs["num_patches"] = np.int32(len(patches))
                 for i, patch in enumerate(patches):
                     grp = f.create_group(f"patch_{i:02d}")
                     grp.attrs["frac_low"] = patch.frac_low
@@ -376,52 +409,24 @@ class RandomClusterField(ClusterField):
 
         num_halos = 1
         self.ctr1 = parse_value(ctr1, "kpc").v
-        if isinstance(profile1, ClusterModel):
-            r1 = profile1["radius"].to_value("kpc")
-            g1 = profile1[self._profile_field]
-        elif isinstance(profile1, str):
-            r1 = unyt_array.from_hdf5(profile1, dataset_name="radius", group_name="fields").to("kpc").d
-            g1 = unyt_array.from_hdf5(profile1, dataset_name=self._profile_field, group_name="fields")
-        else:
-            r1, g1 = profile1
+        r1, g1 = _load_radial_profile(profile1, self._profile_field)
         self.r1 = parse_value(r1, "kpc").v
         self.g1 = parse_value(g1, self._units)
+
         if profile2 is not None:
-            if isinstance(profile2, ClusterModel):
-                r2 = profile2["radius"].to_value("kpc")
-                g2 = profile2[self._profile_field]
-            elif isinstance(profile2, str):
-                r2 = unyt_array.from_hdf5(profile2, dataset_name="radius", group_name="fields").to("kpc").d
-                g2 = unyt_array.from_hdf5(
-                    profile2,
-                    dataset_name=self._profile_field,
-                    group_name="fields",
-                )
-            else:
-                r2, g2 = profile2
             num_halos += 1
             if ctr2 is None:
                 raise RuntimeError("Need to specify 'ctr2' for the second halo!")
             self.ctr2 = parse_value(ctr2, "kpc").v
+            r2, g2 = _load_radial_profile(profile2, self._profile_field)
             self.r2 = parse_value(r2, "kpc").v
             self.g2 = parse_value(g2, self._units)
         if profile3 is not None:
-            if isinstance(profile3, ClusterModel):
-                r3 = profile3["radius"].to_value("kpc")
-                g3 = profile3[self._profile_field]
-            elif isinstance(profile3, str):
-                r3 = unyt_array.from_hdf5(profile3, dataset_name="radius", group_name="fields").to("kpc").d
-                g3 = unyt_array.from_hdf5(
-                    profile3,
-                    dataset_name=self._profile_field,
-                    group_name="fields",
-                )
-            else:
-                r3, g3 = profile3
             num_halos += 1
             if ctr3 is None:
                 raise RuntimeError("Need to specify 'ctr3' for the second halo!")
             self.ctr3 = parse_value(ctr3, "kpc").v
+            r3, g3 = _load_radial_profile(profile3, self._profile_field)
             self.r3 = parse_value(r3, "kpc").v
             self.g3 = parse_value(g3, self._units)
         self.r_max = r_max
@@ -474,18 +479,14 @@ class RandomClusterField(ClusterField):
 
     def _divergence_clean_field(self, g, width, ddims):
         fa = FourierAnalysis(width, ddims)
-        # divergence_component() returns the field's longitudinal
-        # (curl-free, divergence-carrying) part; subtracting it leaves
-        # the transverse (divergence-free) remainder required for a
-        # physical (solenoidal) field -- mirrors the renormalization
-        # field_kit itself uses for the same operation in
-        # RandomField.generate_vector_field_realization(divergence_free=True).
-        g = g - fa.divergence_component(g)
+        # solenoidal_component() projects out the divergence-free
+        # (transverse) part of the field, as required for a physical
+        # magnetic field. It doesn't renormalize the amplitude, so:
         # for an isotropic field, the transverse part carries 2/3 of the
         # total power (2 independent transverse directions vs. 1
-        # longitudinal), so rescale the amplitude by sqrt(3/2) to
-        # restore the original variance.
-        g *= np.sqrt(1.5)
+        # longitudinal), so rescale by sqrt(3/2) to restore the original
+        # variance.
+        g = fa.solenoidal_component(g) * np.sqrt(1.5)
         if self._vector_potential:
             g = fa.potential_of_field(g)
         return g
@@ -692,3 +693,110 @@ class VelocityRandomClusterField(RandomClusterField):
             prng=prng,
             refinement_regions=refinement_regions,
         )
+
+
+def refinement_regions_for_clusters(
+    centers,
+    profiles,
+    profile_field,
+    width_frac=0.1,
+    refine_by=4,
+    padding=0.25,
+    taper_alpha=0.3,
+    r_max=None,
+    max_width=None,
+):
+    r"""
+    Build a ``refinement_regions`` list (see :class:`RandomClusterField`) with
+    one refinement patch centered on each cluster, sized automatically from
+    that cluster's own profile rather than picked by hand.
+
+    The width of each patch is set to twice the radius at which the
+    cluster's profile first falls to ``width_frac`` of its central (innermost
+    tabulated) value -- i.e. the patch spans out to where the field has
+    dropped off, not an arbitrary fixed size. Placement uses ``centers``
+    directly, so it stays in sync with whatever you pass as
+    ``ctr1``/``ctr2``/``ctr3`` to the field class's constructor.
+
+    A slowly-declining profile sampled out to large radii can produce a
+    width far bigger than intended (and, in turn, a patch grid so large it
+    exhausts memory) -- pass ``max_width`` (and/or ``r_max``) to guard
+    against this, especially the first time you use a given profile.
+
+    Parameters
+    ----------
+    centers : sequence of array-like
+        The cluster centers [kpc], in the same order as ``ctr1``, ``ctr2``,
+        ``ctr3`` passed to the field constructor.
+    profiles : sequence of ClusterModel, string, or (r, g) array-like
+        The corresponding profiles (``profile1``, ``profile2``, ``profile3``),
+        one per center.
+    profile_field : str
+        The name of the field that is being profiled.
+    width_frac : float or sequence of float, optional
+        The fraction of each profile's central value used to define its
+        patch width (see above). A single value applies to every cluster;
+        a sequence must match ``centers`` in length. Default: 0.1.
+    refine_by : int or sequence of int, optional
+        The refinement factor relative to the coarse grid's cell size (see
+        ``refinement_regions``). A single value applies to every cluster; a
+        sequence must match ``centers`` in length. Default: 4.
+    padding : float, optional
+        Shared padding fraction for every patch (see ``refinement_regions``).
+        Default: 0.25.
+    taper_alpha : float, optional
+        Shared Tukey taper parameter for every patch (see
+        ``refinement_regions``). Default: 0.3.
+    r_max : float, optional
+        If given, ignore profile values beyond this radius [kpc] when
+        determining each patch's width (matching the field constructor's own
+        ``r_max``).
+    max_width : float, optional
+        If given, cap every computed width at this value [kpc] (a hard
+        safety limit, applied after ``width_frac``/``r_max``). Default:
+        None (no cap).
+
+    Returns
+    -------
+    list of dict
+        Ready to pass as ``refinement_regions`` to ``field_cls`` (or any
+        other :class:`RandomClusterField` subclass).
+    """
+    n = len(centers)
+    if len(profiles) != n:
+        raise ValueError("centers and profiles must have the same length.")
+
+    def _broadcast(value, name):
+        if np.isscalar(value):
+            return [value] * n
+        value = list(value)
+        if len(value) != n:
+            raise ValueError(f"'{name}' must be a scalar or have the same length as 'centers'.")
+        return value
+
+    width_fracs = _broadcast(width_frac, "width_frac")
+    refine_bys = _broadcast(refine_by, "refine_by")
+
+    regions = []
+    for center, profile, wf, rb in zip(centers, profiles, width_fracs, refine_bys, strict=True):
+        r, g = _load_radial_profile(profile, profile_field)
+        g = np.abs(g.d)
+        if r_max is not None:
+            keep = r <= r_max
+            r, g = r[keep], g[keep]
+        threshold = wf * g[0]
+        below = g <= threshold
+        idx = int(np.argmax(below)) if below.any() else len(r) - 1
+        width = 2.0 * r[idx]
+        if max_width is not None:
+            width = min(width, max_width)
+        regions.append(
+            {
+                "center": center,
+                "width": width,
+                "refine_by": rb,
+                "padding": padding,
+                "taper_alpha": taper_alpha,
+            }
+        )
+    return regions

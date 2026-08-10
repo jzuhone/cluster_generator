@@ -8,6 +8,7 @@ from cluster_generator.fields import (
     MagneticPotentialRandomClusterField,
     MagneticRandomClusterField,
     VelocityRandomClusterField,
+    refinement_regions_for_clusters,
 )
 from cluster_generator.ics import ClusterICs, compute_centers_for_binary
 from cluster_generator.model import ClusterModel, HydrostaticEquilibrium
