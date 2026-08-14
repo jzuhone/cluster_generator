@@ -529,8 +529,9 @@ def _setup_gadget_gas_ics(
     mylog.info("Background gas density is %g Msun/kpc**3.", bkg_density)
 
     bkg_temperature = unyt_quantity(bkg_temperature, "K").to("keV", "thermal")
-    bkg_thermal_energy = (1.5 * bkg_temperature / (0.6 * mp)).to_value("kpc**2/Myr**2")
-    mylog.info("Background thermal energy is %g kpc**2/Myr**2.", bkg_thermal_energy)
+    bkg_pressure = bkg_density * (bkg_temperature / (0.6 * mp)).to_value("kpc**2/Myr**2")
+    mylog.info("Background pressure is %g Msun/kpc/Myr**2.", bkg_pressure)
+    bkg_thermal_energy = 1.5 * bkg_pressure / bkg_density
 
     parts = ics.setup_particle_ics(regenerate_particles=regenerate_particles, prng=prng)
     src_particle_mass = parts["gas", "particle_mass"][0].to_value("Msun")
@@ -563,9 +564,7 @@ def _setup_gadget_gas_ics(
         ("gas", "particle_mass"): unyt_array(bkg_particle_mass * np.ones(nleft), "Msun"),
     }
     parts = parts + ClusterParticles.from_fields(fields)
-    new_parts = ics.resample_particle_ics(
-        parts, bkg_density=bkg_density, bkg_thermal_energy=bkg_thermal_energy
-    )
+    new_parts = ics.resample_particle_ics(parts, bkg_density=bkg_density, bkg_pressure=bkg_pressure)
 
     if num_lloyd_iterations > 0:
         gas_pos = new_parts["gas", "particle_position"].to_value("kpc")
@@ -588,7 +587,7 @@ def _setup_gadget_gas_ics(
         # Resample density, internal energy, and velocity onto the relaxed
         # positions (recalc_mass=False keeps the particle masses).
         new_parts = ics.resample_particle_ics(
-            new_parts, recalc_mass=False, bkg_density=bkg_density, bkg_thermal_energy=bkg_thermal_energy
+            new_parts, recalc_mass=False, bkg_density=bkg_density, bkg_pressure=bkg_pressure
         )
         if mass_method is not None:
             # AREPO ignores the Density field and recomputes density =
@@ -611,9 +610,9 @@ def setup_arepo_ics(
     ics,
     boxsize,
     nxb,
-    bkg_density,
-    bkg_temperature,
     ic_file,
+    bkg_density=5.0e-30,
+    bkg_temperature=6.0e6,
     overwrite=False,
     regenerate_particles=False,
     num_lloyd_iterations=50,
@@ -675,9 +674,9 @@ def setup_arepo_ics(
         ics,
         boxsize,
         nxb,
+        ic_file,
         bkg_density,
         bkg_temperature,
-        ic_file,
         code="arepo",
         mass_method=mass_method,
         overwrite=overwrite,
@@ -694,9 +693,9 @@ def setup_gizmo_ics(
     ics,
     boxsize,
     nxb,
-    bkg_density,
-    bkg_temperature,
     ic_file,
+    bkg_density=5.0e-30,
+    bkg_temperature=6.0e6,
     overwrite=False,
     regenerate_particles=False,
     num_lloyd_iterations=50,
@@ -770,9 +769,9 @@ def setup_gizmo_ics(
         ics,
         boxsize,
         nxb,
-        bkg_density,
-        bkg_temperature,
         ic_file,
+        bkg_density=bkg_density,
+        bkg_temperature=bkg_temperature,
         code="gizmo",
         mass_method=None,
         overwrite=overwrite,

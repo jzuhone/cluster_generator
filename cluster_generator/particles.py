@@ -570,14 +570,15 @@ def _sample_clusters(
     hses,
     center,
     velocity,
-    radii=None,
     recalc_mass=False,
     passive_scalars=None,
     bkg_density=None,
-    bkg_thermal_energy=None,
+    bkg_pressure=None,
 ):
     if bkg_density is None:
         bkg_density = 0.0
+    if bkg_pressure is None:
+        bkg_pressure = 0.0
     num_halos = len(hses)
     center = [ensure_ytarray(c, "kpc") for c in center]
     velocity = [ensure_ytarray(v, "kpc/Myr") for v in velocity]
@@ -611,9 +612,10 @@ def _sample_clusters(
     dens = d.sum(axis=0)
     floor_d = dens < bkg_density
     dens[floor_d] = bkg_density
-    eint = e.sum(axis=0) / dens
-    floor_e = eint < bkg_thermal_energy
-    eint[floor_e] = bkg_thermal_energy
+    eint = e.sum(axis=0)
+    floor_e = eint < 1.5 * bkg_pressure
+    eint[floor_e] = 1.5 * bkg_pressure
+    eint /= dens
     mom = m.sum(axis=0) / dens
     if num_scalars > 0:
         ps = s.sum(axis=0) / dens
@@ -709,6 +711,7 @@ def resample_one_cluster(
     passive_scalars=None,
     recalc_mass=False,
     bkg_density=None,
+    bkg_pressure=None,
 ):
     """
     Resample radial profiles onto a single cluster's particle
@@ -726,15 +729,18 @@ def resample_one_cluster(
         return particles
     if bkg_density is None:
         bkg_density = 0.0
+    if bkg_pressure is None:
+        bkg_pressure = 0.0
     center = ensure_ytarray(center, "kpc")
     velocity = ensure_ytarray(velocity, "kpc/Myr")
     r = ((particles["gas", "particle_position"] - center) ** 2).sum(axis=1).d
     np.sqrt(r, r)
     get_density = InterpolatedUnivariateSpline(hse["radius"], hse["density"], ext=3)
     dens = np.maximum(get_density(r), bkg_density)
-    e_arr = 1.5 * hse["pressure"] / hse["density"]
+    e_arr = 1.5 * hse["pressure"]
     get_energy = InterpolatedUnivariateSpline(hse["radius"], e_arr, ext=3)
-    particles["gas", "thermal_energy"] = unyt_array(get_energy(r), "kpc**2/Myr**2")
+    eint = np.maximum(get_energy(r), 1.5 * bkg_pressure) / dens
+    particles["gas", "thermal_energy"] = unyt_array(eint, "kpc**2/Myr**2")
     if recalc_mass:
         vol = particles["gas", "particle_mass"] / particles["gas", "density"]
         particles["gas", "particle_mass"] = unyt_array(dens * vol.d, "Msun")
@@ -760,6 +766,7 @@ def resample_two_clusters(
     passive_scalars=None,
     recalc_mass=False,
     bkg_density=None,
+    bkg_pressure=None,
 ):
     particles = _sample_clusters(
         particles,
@@ -769,6 +776,7 @@ def resample_two_clusters(
         recalc_mass=recalc_mass,
         passive_scalars=passive_scalars,
         bkg_density=bkg_density,
+        bkg_pressure=bkg_pressure,
     )
     return particles
 
@@ -787,6 +795,7 @@ def resample_three_clusters(
     passive_scalars=None,
     recalc_mass=False,
     bkg_density=None,
+    bkg_pressure=None,
 ):
     particles = _sample_clusters(
         particles,
@@ -796,5 +805,6 @@ def resample_three_clusters(
         recalc_mass=recalc_mass,
         passive_scalars=passive_scalars,
         bkg_density=bkg_density,
+        bkg_pressure=bkg_pressure,
     )
     return particles
