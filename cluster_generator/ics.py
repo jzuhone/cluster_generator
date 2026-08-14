@@ -294,7 +294,8 @@ class ClusterICs:
     def setup_particle_ics(self, regenerate_particles=False, prng=None):
         r"""
         From a set of cluster models and their relative positions and
-        velocities, set up initial conditions for use with SPH codes.
+        velocities, set up initial conditions for use with SPH/Lagrangian
+        codes.
 
         This routine will either generate a single cluster or will combine
         two or three clusters together. If more than one cluster is
@@ -351,8 +352,6 @@ class ClusterICs:
 
         Parameters
         ----------
-        filename : string
-            The name of file to output the resampled ICs to.
         """
         profiles = [ClusterModel.from_h5_file(hf) for hf in self.profiles]
         if self.num_halos == 1:
@@ -444,7 +443,7 @@ class ClusterICs:
             By default, the ``box_size`` is determined such that the resulting grid
             contains the full radial domain of the :py:class:`ClusterModel`.
         overwrite : bool, optional
-            If ``False`` (default), the an error is raised if ``filename`` already
+            If ``False`` (default), an error is raised if ``filename`` already
             exists. Otherwise, ``filename`` will be deleted and overwritten by this
             method.
         chunksize : int, optional
