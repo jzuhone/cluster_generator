@@ -37,6 +37,7 @@ setup(
         "cython",
         "ruamel.yaml",
         "h5py",
+        "kspace",
     ],
     extras_require={
         # Exact bounded Voronoi cell volumes for AREPO IC generation

@@ -64,9 +64,7 @@ def write_amr_particles(
             f.write_record(np.vstack(pdata).T)
 
 
-def setup_gamer_ics(
-    ics, regenerate_particles=False, use_tracers=False, bkg_density=5.0e-30, bkg_temperature=6.0e6
-):
+def setup_gamer_ics(ics, regenerate_particles=False, use_tracers=False):
     r"""
 
     Generate the "Input_TestProb" lines needed for use
@@ -674,9 +672,9 @@ def setup_arepo_ics(
         ics,
         boxsize,
         nxb,
-        ic_file,
         bkg_density,
         bkg_temperature,
+        ic_file,
         code="arepo",
         mass_method=mass_method,
         overwrite=overwrite,
