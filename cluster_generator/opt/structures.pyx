@@ -115,14 +115,14 @@ def construct_chunks(
 @cython.boundscheck(False)
 @cython.cdivision(True)
 def dump_field_to_hdf5(
-        buffer_object,
-        np.ndarray[DTYPE_t, ndim=2] bbox,
-        np.ndarray[ITYPE32_t, ndim=1] domain_dimensions,
-        np.ndarray[ITYPE32_t, ndim=3] chunkmap,
-        np.ndarray[DTYPE_t, ndim=1] t,
-        np.ndarray[DTYPE_t, ndim=1] c,
-        int k,
-        str fieldname
+    buffer_object,
+    np.ndarray[DTYPE_t, ndim=2] bbox,
+    np.ndarray[ITYPE32_t, ndim=1] domain_dimensions,
+    np.ndarray[ITYPE32_t, ndim=3] chunkmap,
+    np.ndarray[DTYPE_t, ndim=1] t,
+    np.ndarray[DTYPE_t, ndim=1] c,
+    int k,
+    str fieldname
 ):
     """
     Dump interpolated field data to HDF5 file.
