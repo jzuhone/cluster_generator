@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import h5py
 import numpy as np
-from field_kit import FourierAnalysis, GaussianRandomField
+from kspace import FourierAnalysis, GaussianRandomField
 from unyt import unyt_array
 
 from cluster_generator.model import ClusterModel
@@ -549,7 +549,7 @@ class RandomClusterField(ClusterField):
         Zero out all Fourier modes with :math:`|k| < k_{\rm cut}` in a
         real-space vector field, returning only its small-scale content.
         Implemented with plain ``numpy.fft`` (a self-contained round
-        trip), independent of any of ``field_kit``'s internal Fourier
+        trip), independent of any of ``kspace``'s internal Fourier
         scaling conventions.
         """
         ndim, nx, ny, nz = field.shape

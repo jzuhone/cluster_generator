@@ -3,7 +3,8 @@ requires = [
     "setuptools>=61.2",
     "setuptools_scm[toml]>=6.2",
     "numpy>=2.0.0,<3",
-    "Cython"
+    "Cython",
+    "kspace",
 ]
 
 build-backend = "setuptools.build_meta"
@@ -63,6 +64,7 @@ known-third-party = [
   "scipy",
   "pathlib",
   "yt",
+  "kspace",
 ]
 known-first-party = ["cluster_generator"]
 
