@@ -574,6 +574,7 @@ def _sample_clusters(
     recalc_mass=False,
     passive_scalars=None,
     bkg_density=None,
+    bkg_thermal_energy=None,
 ):
     if bkg_density is None:
         bkg_density = 0.0
@@ -608,9 +609,11 @@ def _sample_clusters(
                 get_scalar = InterpolatedUnivariateSpline(hse["radius"], hse[name], ext=3)
                 s[i, j, :] = get_scalar(r[i, :]) * d[i, :]
     dens = d.sum(axis=0)
-    floor = dens < bkg_density
-    dens[floor] = bkg_density
+    floor_d = dens < bkg_density
+    dens[floor_d] = bkg_density
     eint = e.sum(axis=0) / dens
+    floor_e = eint < bkg_thermal_energy
+    eint[floor_e] = bkg_thermal_energy
     mom = m.sum(axis=0) / dens
     if num_scalars > 0:
         ps = s.sum(axis=0) / dens
