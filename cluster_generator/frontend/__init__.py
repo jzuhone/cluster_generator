@@ -1,2 +1,1 @@
 from cluster_generator.frontend.data_structures import ClusterGeneratorDataset
-from cluster_generator.frontend.io import ClusterGeneratorIOHandler

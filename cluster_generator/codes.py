@@ -313,8 +313,17 @@ def _stream_grid_moments(pos, boxsize, grid_oversample, density_func=None, chunk
     wsum = np.zeros(n, dtype=float)
     wpos_sum = np.zeros((n, 3), dtype=float)
 
-    for start in range(0, total, chunk_size):
+    n_chunks = -(-total // chunk_size)  # ceil division
+    for ci, start in enumerate(range(0, total, chunk_size), 1):
         stop = min(start + chunk_size, total)
+        if n_chunks > 1:
+            mylog.info(
+                "Streaming grid moments: chunk %d/%d (%.1f%% of %d grid points).",
+                ci,
+                n_chunks,
+                100.0 * stop / total,
+                total,
+            )
         flat = np.arange(start, stop)
         # Unravel the flat lattice index into (i, j, k) cell-centre coordinates.
         i, rem = np.divmod(flat, gn * gn)
@@ -364,8 +373,9 @@ def _lloyd_relax(
     num_iterations : int, optional
         Maximum number of Lloyd iterations. Default: 50
     tol : float or None, optional
-        Convergence tolerance as a fraction of the mean inter-particle spacing;
-        ``None`` runs all iterations. Default: 1e-3
+        Convergence tolerance on the *median* per-particle displacement, as a
+        fraction of the mean inter-particle spacing; ``None`` runs all
+        iterations. Default: 1e-3
     step_damping : float, optional
         Fraction of the centroid displacement applied per iteration (AREPO's
         ``CellShapingSpeed``). Default: 0.5
@@ -394,15 +404,19 @@ def _lloyd_relax(
         valid = wsum > 0
         centroid[valid] = wpos_sum[valid] / wsum[valid, None]
         new_pos = np.clip(pos + step_damping * (centroid - pos), 0.0, boxsize)
-        max_disp = np.max(np.linalg.norm(new_pos - pos, axis=1))
+        # Median (rather than max) displacement: the max is dominated by
+        # whichever single particle has the worst grid-sampling noise in the
+        # centroid estimate that iteration, which plateaus at a noise floor
+        # set by grid_oversample and never reliably drops below tol.
+        med_disp = np.median(np.linalg.norm(new_pos - pos, axis=1))
         pos = new_pos
         mylog.info(
-            "Lloyd's relaxation: iteration %d/%d, max displacement = %.3e mean spacings.",
+            "Lloyd's relaxation: iteration %d/%d, median displacement = %.3e mean spacings.",
             it + 1,
             num_iterations,
-            max_disp / mean_spacing,
+            med_disp / mean_spacing,
         )
-        if tol is not None and max_disp < tol * mean_spacing:
+        if tol is not None and med_disp < tol * mean_spacing:
             mylog.info("Lloyd's relaxation: converged after %d iterations.", it + 1)
             break
     return pos
@@ -472,10 +486,13 @@ def _compute_arepo_masses(
     """
     if mass_method not in ("point", "integrated"):
         raise ValueError(f"Unknown mass_method {mass_method!r}. Use 'point' or 'integrated'.")
+    mylog.info("Computing exact Voronoi cell volumes for %d cells.", len(pos))
     volume = _exact_voronoi_volumes(pos, boxsize)  # exact, lean, scales
+    mylog.info("Voronoi cell volumes computed.")
     if mass_method == "point":
         return np.asarray(point_density, dtype=float) * volume
     if mass_method == "integrated":
+        mylog.info("Computing cell-integrated densities via streaming grid moments.")
         count, wsum, _, grid_dx = _stream_grid_moments(
             pos, boxsize, grid_oversample, density_func, chunk_size
         )

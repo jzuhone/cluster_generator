@@ -1,3 +1,4 @@
+from cluster_generator.amr_hierarchy import refinement_regions_for_clusters
 from cluster_generator.codes import (
     setup_arepo_ics,
     setup_gamer_ics,
@@ -8,7 +9,6 @@ from cluster_generator.fields import (
     MagneticPotentialRandomClusterField,
     MagneticRandomClusterField,
     VelocityRandomClusterField,
-    refinement_regions_for_clusters,
 )
 from cluster_generator.ics import ClusterICs, compute_centers_for_binary
 from cluster_generator.model import ClusterModel, HydrostaticEquilibrium

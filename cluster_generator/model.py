@@ -1212,24 +1212,26 @@ class ClusterModel:
         left_edge: Collection[Number] | unyt_array | None = None,
         box_size: Collection[Number] | unyt_array | None = None,
         overwrite: bool = False,
-        chunksize: int = 64,
+        regions: list[dict] | None = None,
+        max_grid_size: int = 64,
     ) -> str | Path:
         r"""
-        Construct a ``yt`` dataset object from this model on a uniformly
-        spaced grid.
+        Construct a ``yt``-loadable AMReX plotfile from this model, on a
+        uniform grid (or, optionally, an AMR grid locally refined around
+        the cluster core -- see ``regions``).
 
         Parameters
         ----------
         filename : str or :py:class:`pathlib.Path`
-            The path at which to generate the underlying HDF5 datafile.
+            The path at which to generate the plotfile directory.
         domain_dimensions : Collection of int, optional
-            The size of the uniform grid along each axis of the domain.
-            If specified, the argument must be an iterable type with
+            The size of the base (level 0) grid along each axis of the
+            domain. If specified, the argument must be an iterable type with
             shape ``(3,)``. Each element should be an ``int`` specifying
             the number of grid cells to place along that axis. By default,
             the selected value is ``(512,512,512)``.
         left_edge : Collection of float or :py:class:`unyt.unyt_array`, optional
-            The left-most edge of the uniform grid's domain. In conjunction
+            The left-most edge of the base grid's domain. In conjunction
             with ``box_size``, this attribute specifies the position of the
             model in the box and the amount of the model which is actually
             written to the disk. If specified, ``left_edge`` should be a
@@ -1255,31 +1257,33 @@ class ClusterModel:
             If ``False`` (default), the error is raised if ``filename``
             already exists. Otherwise, ``filename`` will be deleted and overwritten
             by this method.
-        chunksize : int, optional
-            The maximum chunksize for subgrid operations. Lower values with increase
-            the execution time but save memory. By default, chunks contain no more
-            that :math:`64^3` cells (``chunksize=64``).
+        regions : list of dict, optional
+            Locally-refined regions around the cluster core -- the same
+            schema as :class:`cluster_generator.fields.RandomClusterField`'s
+            ``refinement_regions`` (see
+            :class:`cluster_generator.amr_hierarchy.AMRHierarchy`). Default:
+            None (a plain uniform grid).
+        max_grid_size : int, optional
+            The maximum size of a single AMR box along any axis. A higher
+            value increases memory usage per box but reduces the number of
+            boxes. Default: 64.
 
         Returns
         -------
         str
-            The path to the output dataset file.
+            The path to the output plotfile directory.
 
         Notes
         -----
 
-        Generically, converting a :py:class:`ClusterModel` instance to a valid
-        ``yt`` dataset occurs in two steps. In the first step, the dataset is
-        written to disk on a uniform grid (or, more generally, an AMR grid).
-        From this grid, ``yt`` can then interpret the data and construct a
-        dataset from there.
-
-        Because constructing the underlying grid is a memory intensive procedure,
-        this method utilizes the HDF5 structure as an intermediary (effectively
-        using the disk for VRAM).
-
+        This writes a real AMReX plotfile, natively readable by ``yt.load()``
+        via yt's ``amrex``/``boxlib`` frontend (with cluster_generator's field
+        aliases registered by importing :mod:`cluster_generator.frontend`)
+        or by any other AMReX-plotfile reader -- requires the ``pyamrex``
+        package (``conda install -c conda-forge pyamrex``; see
+        :mod:`cluster_generator.amr_hierarchy`).
         """
-        from cluster_generator.data_structures import YTHDF5
+        from cluster_generator.datasets import AMRClusterDataset
 
         # If the base parameters are not specified, then they need to be constructed
         # from the dataset information.
@@ -1295,17 +1299,16 @@ class ClusterModel:
         )
         bbox = np.array([[le, le + bs] for le, bs in zip(left_edge, box_size, strict=True)], dtype="float")
 
-        ds_obj = YTHDF5.build(
-            filename,
+        ds_obj = AMRClusterDataset.build(
             domain_dimensions,
             bbox,
-            chunksize=chunksize,
-            overwrite=overwrite,
+            regions=regions,
+            max_grid_size=max_grid_size,
         )
 
         ds_obj.add_model(self, [0, 0, 0], [0, 0, 0])
 
-        return ds_obj.filename
+        return ds_obj.write(filename, overwrite=overwrite)
 
 
 # This is only for backwards-compatibility

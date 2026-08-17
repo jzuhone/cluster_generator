@@ -15,4 +15,4 @@ API
     relations
     virial
     codes
-    data_structures
+    datasets

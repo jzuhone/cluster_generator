@@ -12,13 +12,6 @@ cython_utils = Extension(
     libraries=["m"],
     include_dirs=[np.get_include()],
 )
-opt_utils = Extension(
-    "cluster_generator.opt.structures",
-    sources=["cluster_generator/opt/structures.pyx"],
-    language="c",
-    libraries=["m"],
-    include_dirs=[np.get_include()],
-)
 
 setup(
     name="cluster_generator",
@@ -44,6 +37,11 @@ setup(
         # (codes.setup_arepo_ics / relax_arepo_ics).  pyvoro2 wraps voro++
         # and ships wheels for modern Python.
         "arepo": ["pyvoro2"],
+        # AMR grids/plotfiles (datasets.AMRClusterDataset,
+        # amr_hierarchy.AMRHierarchy).  pyamrex is not distributed on PyPI --
+        # this entry documents the requirement, but install it with
+        # `conda install -c conda-forge pyamrex` (a 'nompi' build is enough).
+        "amr": [],
     },
     classifiers=[
         "Intended Audience :: Science/Research",
@@ -52,5 +50,5 @@ setup(
         "Topic :: Scientific/Engineering :: Visualization",
     ],
     include_package_data=True,
-    ext_modules=cythonize([cython_utils, opt_utils]),
+    ext_modules=cythonize([cython_utils]),
 )

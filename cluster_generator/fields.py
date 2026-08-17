@@ -3,24 +3,41 @@
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import h5py
 import numpy as np
 from kspace import FourierAnalysis, GaussianRandomField
 from unyt import unyt_array
 
-from cluster_generator.model import ClusterModel
+from cluster_generator.amr_hierarchy import (
+    check_no_overlap,
+    load_radial_profile,
+    region_chain_geometry,
+)
 from cluster_generator.utils import mylog
 
 
 @dataclass
 class FieldPatch:
     """
-    A single locally-refined sub-box of a :class:`RandomClusterField`,
-    carrying only the small-scale ("high-k") power beyond what the
-    coarse grid resolves. See ``refinement_regions`` on
-    :class:`RandomClusterField`.
+    One node of a :class:`RandomClusterField`'s coarse-to-fine patch tree.
+
+    Every node -- the coarse grid itself (``ClusterField.root``) as well
+    as every locally-refined sub-box (see ``refinement_regions`` on
+    :class:`RandomClusterField`) -- is represented the same way, so a
+    single recursive algorithm (:meth:`ClusterField._apply_patch`) can
+    walk the whole tree uniformly: the root has ``frac_low=0`` and a
+    ``window`` of all ones (it has no parent to blend into and carries
+    the full target amplitude on its own), while every other node carries
+    only the small-scale ("high-k") power beyond what its parent (the
+    root, or an enclosing, coarser patch) resolves.
+
+    ``children`` holds any further-refined sub-boxes nested inside this
+    one (built from that region's own ``"children"`` entry, or --
+    for the root -- from the top-level ``refinement_regions`` list),
+    enabling an arbitrary number of refinement levels; it is empty for a
+    node with no nested children.
     """
 
     left_edge: np.ndarray
@@ -33,6 +50,8 @@ class FieldPatch:
     g: np.ndarray
     window: np.ndarray
     frac_low: float
+    g_avg: float
+    children: list = field(default_factory=list)
 
 
 def parse_value(value, default_units):
@@ -63,73 +82,36 @@ def parse_value(value, default_units):
     return val
 
 
-def _load_radial_profile(profile, profile_field):
-    r"""
-    Load a radial profile from a :class:`~cluster_generator.model.ClusterModel`,
-    an HDF5 filename, or an ``(r, g)`` array-like pair.
-
-    Parameters
-    ----------
-    profile : ClusterModel, string, or (r, g) array-like
-        The source of the profile.
-    profile_field : str
-        The name of the field to read (e.g. "magnetic_field_strength").
-    units : str
-        The units to convert the field values to.
-
-    Returns
-    -------
-    r : ndarray
-        Radii [kpc].
-    g : unyt_array
-        The field values, in ``units``.
-    """
-    if isinstance(profile, ClusterModel):
-        r = profile["radius"].to_value("kpc")
-        g = profile[profile_field]
-    elif isinstance(profile, str):
-        r = unyt_array.from_hdf5(profile, dataset_name="radius", group_name="fields").to("kpc").d
-        g = unyt_array.from_hdf5(profile, dataset_name=profile_field, group_name="fields")
-    else:
-        r, g = profile
-    return r, g
-
-
 def _check_no_overlap(regions):
     r"""
-    Raise a clear error if any two refinement regions overlap.
+    Raise a clear error if any two refinement regions overlap, after
+    parsing each region's ``center`` into plain kpc floats (see
+    :func:`~cluster_generator.amr_hierarchy.check_no_overlap`, which does
+    the actual comparison -- using each region's *outermost*, level-1 box
+    width, since that's the one that must not overlap another region's;
+    see :func:`~cluster_generator.amr_hierarchy.region_outer_width`).
 
-    Each region is approximated as a sphere of radius ``width/2`` centered
-    on ``center``; two regions overlap if their centers are closer together
-    than the sum of those radii. ``RandomClusterField``'s patch combination
-    (see ``_interpolate_at_points``) assumes non-overlapping regions -- for
-    an overlapping pair, a query point in the overlap only ever sees
+    ``RandomClusterField``'s patch combination (see
+    ``_interpolate_at_points``) assumes non-overlapping regions -- for an
+    overlapping pair, a query point in the overlap only ever sees
     whichever region happens to come first in the list, silently ignoring
     the other one there.
 
     Parameters
     ----------
     regions : list of dict
-        A ``refinement_regions`` list, each with "center" and "width" keys.
+        A ``refinement_regions`` list, each with ``center`` and ``width``
+        keys (and optionally ``num_levels``/``padding``).
     """
-    n = len(regions)
-    for i in range(n):
-        ci = np.asarray(parse_value(regions[i]["center"], "kpc").v)
-        wi = regions[i]["width"]
-        for j in range(i + 1, n):
-            cj = np.asarray(parse_value(regions[j]["center"], "kpc").v)
-            wj = regions[j]["width"]
-            dist = np.linalg.norm(ci - cj)
-            min_sep = 0.5 * (wi + wj)
-            if dist < min_sep:
-                raise ValueError(
-                    f"refinement_regions {i} and {j} overlap: their centers are "
-                    f"{dist:.1f} kpc apart, but widths {wi:.1f} and {wj:.1f} kpc "
-                    f"require at least {min_sep:.1f} kpc of separation. Shrink "
-                    "their widths, move the clusters apart, or build the list "
-                    "with refinement_regions_for_clusters(), which avoids this "
-                    "automatically."
-                )
+    parsed = [{**r, "center": parse_value(r["center"], "kpc").v} for r in regions]
+    try:
+        check_no_overlap(parsed)
+    except ValueError as e:
+        raise ValueError(
+            f"{e} Shrink their widths, move the clusters apart, or build the "
+            "list with refinement_regions_for_clusters(), which avoids this "
+            "automatically."
+        ) from e
 
 
 class ClusterField:
@@ -191,6 +173,18 @@ class ClusterField:
         self.ky = ky
         self.kz = kz
         self.g = None
+        self.root = None
+
+    @property
+    def patches(self):
+        r"""
+        Top-level locally-refined patches (see ``RandomClusterField``'s
+        ``refinement_regions``), i.e. ``self.root.children``. Kept as a
+        convenience alias -- ``self.root`` (the coarse grid, itself the
+        root of the same recursive patch tree; see :class:`FieldPatch`)
+        is the more complete picture.
+        """
+        return self.root.children if self.root is not None else []
 
     def _generate_field(self, *args, **kwargs):
         raise NotImplementedError("This method must be implemented in a subclass.")
@@ -283,61 +277,78 @@ class ClusterField:
                 f.attrs["num_patches"] = np.int32(len(patches))
                 for i, patch in enumerate(patches):
                     grp = f.create_group(f"patch_{i:02d}")
-                    grp.attrs["frac_low"] = patch.frac_low
-                    grp.create_dataset("window", data=patch.window)
-                    for ax, arr in zip("xyz", (patch.x, patch.y, patch.z), strict=True):
-                        pd = unyt_array(arr, "kpc").to(length_unit)
-                        d = grp.create_dataset(ax, data=pd.d)
-                        d.attrs["units"] = str(pd.units)
-                    for j, ax in enumerate("xyz"):
-                        pfd = unyt_array(patch.g[j, ...], self.units)
-                        if field_unit is not None:
-                            pfd = pfd.to(
-                                f"{length_unit}*{field_unit}" if self._vector_potential else field_unit
-                            )
-                        d = grp.create_dataset(f"{self._name}_{ax}", data=pfd.d)
-                        d.attrs["units"] = str(pfd.units)
+                    self._write_patch(grp, patch, length_unit, field_unit)
+
+    def _write_patch(self, grp, patch, length_unit, field_unit):
+        r"""
+        Recursively write a :class:`FieldPatch` -- and any further-refined
+        ``patch.children`` -- to an open HDF5 group as nested subgroups
+        (``child_00``, ``child_01``, ...), mirroring the nesting of
+        ``refinement_regions``.
+        """
+        grp.attrs["frac_low"] = patch.frac_low
+        grp.attrs["num_children"] = np.int32(len(patch.children))
+        grp.create_dataset("window", data=patch.window)
+        for ax, arr in zip("xyz", (patch.x, patch.y, patch.z), strict=True):
+            pd = unyt_array(arr, "kpc").to(length_unit)
+            d = grp.create_dataset(ax, data=pd.d)
+            d.attrs["units"] = str(pd.units)
+        for j, ax in enumerate("xyz"):
+            pfd = unyt_array(patch.g[j, ...], self.units)
+            if field_unit is not None:
+                pfd = pfd.to(f"{length_unit}*{field_unit}" if self._vector_potential else field_unit)
+            d = grp.create_dataset(f"{self._name}_{ax}", data=pfd.d)
+            d.attrs["units"] = str(pfd.units)
+        for i, child in enumerate(patch.children):
+            child_grp = grp.create_group(f"child_{i:02d}")
+            self._write_patch(child_grp, child, length_unit, field_unit)
 
     def _interpolate_at_points(self, coords):
         r"""
         Evaluate the field at arbitrary points via tri-linear
-        interpolation on the coarse grid, plus a correction from any
-        locally-refined ``patches`` (see ``RandomClusterField``'s
-        ``refinement_regions``) whose box contains the point. Patches
-        are assumed non-overlapping.
+        interpolation, walking ``self.root`` (the coarse grid, itself the
+        root of the same recursive patch tree -- see :class:`FieldPatch`)
+        down through any locally-refined ``patches`` (see
+        ``RandomClusterField``'s ``refinement_regions``) whose box
+        contains the point, recursing through an arbitrary number of
+        nested refinement levels. Patches are assumed non-overlapping
+        with their siblings.
+        """
+        coords = np.asarray(coords)
+        v = np.zeros((coords.shape[0], 3))
+        return self._apply_patch(v, self.root, coords)
+
+    @staticmethod
+    def _apply_patch(v, patch, coords):
+        r"""
+        Blend a single :class:`FieldPatch` into ``v`` -- the field values
+        already evaluated at ``coords`` from ``patch``'s parent (the
+        coarse grid, or an enclosing, coarser patch) -- then recurse into
+        ``patch.children`` to blend in any further refinement nested
+        inside it.
         """
         from scipy.interpolate import RegularGridInterpolator
 
-        coords = np.asarray(coords)
-        v = np.zeros((coords.shape[0], 3))
-        for i, ax in enumerate("xyz"):
-            func = RegularGridInterpolator(
-                (self["x"], self["y"], self["z"]),
-                self[self._name + "_" + ax],
-                bounds_error=False,
-                fill_value=0.0,
-            )
-            v[:, i] = func(coords)
-
-        for patch in getattr(self, "patches", []):
-            w_func = RegularGridInterpolator(
+        w_func = RegularGridInterpolator(
+            (patch.x, patch.y, patch.z),
+            patch.window,
+            bounds_error=False,
+            fill_value=0.0,
+        )
+        w = w_func(coords)
+        # outside the patch box, w == 0 (fill_value), so this
+        # correction is a no-op and the parent-only value is kept
+        correction = 1.0 - (1.0 - np.sqrt(patch.frac_low)) * w
+        for i in range(3):
+            g_func = RegularGridInterpolator(
                 (patch.x, patch.y, patch.z),
-                patch.window,
+                patch.g[i, ...],
                 bounds_error=False,
                 fill_value=0.0,
             )
-            w = w_func(coords)
-            # outside the patch box, w == 0 (fill_value), so this
-            # correction is a no-op and the coarse-only value is kept
-            correction = 1.0 - (1.0 - np.sqrt(patch.frac_low)) * w
-            for i in range(3):
-                g_func = RegularGridInterpolator(
-                    (patch.x, patch.y, patch.z),
-                    patch.g[i, ...],
-                    bounds_error=False,
-                    fill_value=0.0,
-                )
-                v[:, i] = v[:, i] * correction + g_func(coords)
+            v[:, i] = v[:, i] * correction + g_func(coords)
+        for child in patch.children:
+            v = ClusterField._apply_patch(v, child, coords)
         return v
 
     def interpolate_to_points(self, coords, units=None):
@@ -391,6 +402,45 @@ class ClusterField:
 
 
 class RandomClusterField(ClusterField):
+    r"""
+    Parameters
+    ----------
+    refinement_regions : list of dict, optional
+        One entry per cluster: a telescoping chain of locally-refined
+        boxes, layered on top of the coarse grid to add small-scale power
+        it can't resolve (e.g. around a cluster core), each twice the
+        resolution of the level just outside it (``refine_by`` is always
+        2). Each entry is a dict with keys:
+
+        center : array-like
+            The box center [kpc], shared by every level of this region's
+            chain.
+        width : float
+            The *finest* (innermost) level's side length [kpc] -- the one
+            actually ``width`` wide, at full resolution; a single value
+            applies to all three axes.
+        num_levels : int, optional
+            The number of refinement levels in this region's chain, each
+            twice the resolution of the level just outside it. Going
+            outward from the finest box, each coarser level is
+            ``padding`` times wider than the level just inside it, down
+            to level 1 (nested directly inside the coarse grid). Default:
+            1 (a single level, ``width`` wide).
+        padding : float, optional
+            Width ratio between consecutive levels of this region's chain
+            (see above); also leaves room for the taper below to roll off
+            before each level's box edge. Default: 1.5.
+        taper_alpha : float, optional
+            Tukey-window taper parameter used to blend each level of this
+            region smoothly into the level just outside it. Default: 0.3.
+
+        Regions must not overlap (checked using each one's widest,
+        level-1 box) -- :func:`_check_no_overlap` raises a clear error if
+        they do; see :func:`refinement_regions_for_clusters` for a helper
+        that sizes and places them automatically. Using
+        ``refinement_regions`` requires an isotropic coarse grid.
+    """
+
     def __init__(
         self,
         left_edge,
@@ -421,7 +471,6 @@ class RandomClusterField(ClusterField):
                 f"(dx == dy == dz); got deltas={self.deltas}."
             )
         self.refinement_regions = refinement_regions or []
-        self.patches = []
         self.power_spec = power_spec
 
         if self.refinement_regions:
@@ -432,10 +481,10 @@ class RandomClusterField(ClusterField):
                     "reproducible per-patch seeds can be derived from it."
                 )
             seed_seq = np.random.SeedSequence(prng)
-            coarse_seed, *self._patch_seeds = seed_seq.spawn(1 + len(self.refinement_regions))
+            coarse_seed, self._patches_seed_seq = seed_seq.spawn(2)
         else:
             coarse_seed = prng
-            self._patch_seeds = []
+            self._patches_seed_seq = None
 
         self.grf = GaussianRandomField(
             self.left_edge, self.right_edge, self.ddims, power_spec, seed=coarse_seed
@@ -446,7 +495,7 @@ class RandomClusterField(ClusterField):
 
         num_halos = 1
         self.ctr1 = parse_value(ctr1, "kpc").v
-        r1, g1 = _load_radial_profile(profile1, self._profile_field)
+        r1, g1 = load_radial_profile(profile1, self._profile_field)
         self.r1 = parse_value(r1, "kpc").v
         self.g1 = parse_value(g1, self._units)
 
@@ -455,7 +504,7 @@ class RandomClusterField(ClusterField):
             if ctr2 is None:
                 raise RuntimeError("Need to specify 'ctr2' for the second halo!")
             self.ctr2 = parse_value(ctr2, "kpc").v
-            r2, g2 = _load_radial_profile(profile2, self._profile_field)
+            r2, g2 = load_radial_profile(profile2, self._profile_field)
             self.r2 = parse_value(r2, "kpc").v
             self.g2 = parse_value(g2, self._units)
         if profile3 is not None:
@@ -463,7 +512,7 @@ class RandomClusterField(ClusterField):
             if ctr3 is None:
                 raise RuntimeError("Need to specify 'ctr3' for the second halo!")
             self.ctr3 = parse_value(ctr3, "kpc").v
-            r3, g3 = _load_radial_profile(profile3, self._profile_field)
+            r3, g3 = load_radial_profile(profile3, self._profile_field)
             self.r3 = parse_value(r3, "kpc").v
             self.g3 = parse_value(g3, self._units)
         self.r_max = r_max
@@ -477,6 +526,7 @@ class RandomClusterField(ClusterField):
         callers are responsible for normalizing a raw GRF realization to
         match it (dividing by that realization's own rms).
         """
+        print(self.dx)
         mylog.info("Scaling the fields by cluster 1.")
         rr = np.sqrt(
             (x[:, np.newaxis, np.newaxis] - self.ctr1[0]) ** 2
@@ -540,8 +590,27 @@ class RandomClusterField(ClusterField):
             g = self._divergence_clean_field(g, self.width, self.ddims)
         self.g = g
 
+        # The coarse grid is itself the root of the patch tree (see
+        # FieldPatch): frac_low=0 and window=1 everywhere means
+        # _apply_patch's blend reduces to "just use this grid's own data",
+        # reproducing the (former) special-cased coarse-grid evaluation
+        # exactly, with no separate code path needed.
+        self.root = FieldPatch(
+            left_edge=self.left_edge,
+            right_edge=self.right_edge,
+            ddims=self.ddims,
+            deltas=self.deltas,
+            x=self.x,
+            y=self.y,
+            z=self.z,
+            g=self.g,
+            window=np.ones(tuple(self.ddims)),
+            frac_low=0.0,
+            g_avg=self._g_avg_low,
+        )
+
         if self.refinement_regions:
-            self._generate_patches()
+            self.root.children = self._generate_patches()
 
     @staticmethod
     def _highpass_filter(field, deltas, k_cut):
@@ -569,79 +638,95 @@ class RandomClusterField(ClusterField):
             out[i] = np.fft.ifftn(fhat).real
         return out
 
-    def _generate_patch(self, region, seed):
+    def _generate_patch_chain(self, region, seed_seq):
         r"""
-        Generate a single locally-refined :class:`FieldPatch`: an
-        independent GRF realization at finer resolution than the coarse
-        grid, high-pass filtered to keep only the power the coarse grid
-        can't represent, amplitude-normalized so the combined
-        coarse+patch field matches the target profile without
-        double-counting power (see ``refinement_regions`` docs), and
-        tapered to zero at the padded edges of the patch box so it
-        blends smoothly into the coarse field.
+        Generate the full telescoping chain of locally-refined
+        :class:`FieldPatch` nodes for one ``refinement_regions`` entry:
+        level 1 (widest, nested directly inside ``self.root``) down to
+        level ``region["num_levels"]`` (narrowest, finest -- the width
+        given in ``region["width"]``), each an independent GRF
+        realization at twice the resolution of the level just outside it
+        (see :func:`~cluster_generator.amr_hierarchy.region_chain_geometry`
+        for how each level's box is placed), high-pass filtered above
+        that parent level's own Nyquist frequency to keep only the power
+        it can't represent, amplitude-normalized so the combined chain
+        matches the target profile without double-counting power, and
+        tapered to zero at its own box edges so it blends smoothly into
+        its parent.
+
+        Parameters
+        ----------
+        region : dict
+            This region's own entry from ``refinement_regions``.
+        seed_seq : numpy.random.SeedSequence
+            This region's own seed sequence, spawned from
+            ``self._patches_seed_seq``; spawned further, here, into one
+            seed per level of the chain.
         """
         center = parse_value(region["center"], "kpc").v
-        width = np.atleast_1d(np.array(region["width"], dtype="float64"))
-        if width.size == 1:
-            width = np.repeat(width, 3)
-        refine_by = int(region.get("refine_by", 4))
-        padding = region.get("padding", 0.25)
         taper_alpha = region.get("taper_alpha", 0.3)
+        boxes = region_chain_geometry(self.root.left_edge, self.root.deltas, {**region, "center": center})
+        seeds = seed_seq.spawn(len(boxes))
 
-        coarse_delta = self.deltas[0]
-        patch_delta = coarse_delta / refine_by
+        parent = self.root
+        top_patch = None
+        for (patch_left, patch_right, patch_ddims, patch_deltas), seed in zip(boxes, seeds, strict=True):
+            patch_width = patch_right - patch_left
 
-        pad_width = width * (1.0 + padding)
-        patch_ddims = (2 * np.ceil(0.5 * pad_width / patch_delta)).astype("int")
-        patch_left = center - 0.5 * patch_ddims * patch_delta
-        patch_right = center + 0.5 * patch_ddims * patch_delta
-        patch_width = patch_right - patch_left
-        patch_deltas = patch_width / patch_ddims
+            grf = GaussianRandomField(patch_left, patch_right, patch_ddims, self.power_spec, seed=seed)
+            f_raw = grf.generate_vector_field_realization()
+            g_avg_raw = np.sqrt(np.mean(f_raw * f_raw))
 
-        grf = GaussianRandomField(patch_left, patch_right, patch_ddims, self.power_spec, seed=seed)
-        f_raw = grf.generate_vector_field_realization()
+            k_cut = np.pi / parent.deltas[0]
+            f_high = self._highpass_filter(f_raw, patch_deltas, k_cut)
+            g_avg_high = np.sqrt(np.mean(f_high * f_high))
+            frac_low = parent.g_avg**2 / (parent.g_avg**2 + g_avg_high**2)
 
-        k_cut = np.pi / coarse_delta
-        f_high = self._highpass_filter(f_raw, patch_deltas, k_cut)
-        g_avg_high = np.sqrt(np.mean(f_high * f_high))
-        frac_low = self._g_avg_low**2 / (self._g_avg_low**2 + g_avg_high**2)
+            le = patch_left + patch_deltas * 0.5
+            re = patch_right - patch_deltas * 0.5
+            x = np.linspace(le[0], re[0], patch_ddims[0])
+            y = np.linspace(le[1], re[1], patch_ddims[1])
+            z = np.linspace(le[2], re[2], patch_ddims[2])
 
-        le = patch_left + patch_deltas * 0.5
-        re = patch_right - patch_deltas * 0.5
-        x = np.linspace(le[0], re[0], patch_ddims[0])
-        y = np.linspace(le[1], re[1], patch_ddims[1])
-        z = np.linspace(le[2], re[2], patch_ddims[2])
+            target_rms = self._compute_g_rms(x, y, z)
+            f_high = f_high * (np.sqrt(1.0 - frac_low) / g_avg_high) * target_rms
 
-        target_rms = self._compute_g_rms(x, y, z)
-        f_high = f_high * (np.sqrt(1.0 - frac_low) / g_avg_high) * target_rms
+            if self._divergence_clean:
+                f_high = self._divergence_clean_field(f_high, patch_width, patch_ddims)
 
-        if self._divergence_clean:
-            f_high = self._divergence_clean_field(f_high, patch_width, patch_ddims)
+            fa = FourierAnalysis(patch_width, patch_ddims)
+            window = np.ones(tuple(patch_ddims))
+            fa.window_data(window, filter_function="tukey", alpha=taper_alpha)
+            f_high = f_high * window
 
-        fa = FourierAnalysis(patch_width, patch_ddims)
-        window = np.ones(tuple(patch_ddims))
-        fa.window_data(window, filter_function="tukey", alpha=taper_alpha)
-        f_high = f_high * window
+            patch = FieldPatch(
+                left_edge=patch_left,
+                right_edge=patch_right,
+                ddims=patch_ddims,
+                deltas=patch_deltas,
+                x=x,
+                y=y,
+                z=z,
+                g=f_high,
+                window=window,
+                frac_low=frac_low,
+                g_avg=g_avg_raw,
+            )
+            if top_patch is None:
+                top_patch = patch
+            else:
+                parent.children = [patch]
+            parent = patch
 
-        return FieldPatch(
-            left_edge=patch_left,
-            right_edge=patch_right,
-            ddims=patch_ddims,
-            deltas=patch_deltas,
-            x=x,
-            y=y,
-            z=z,
-            g=f_high,
-            window=window,
-            frac_low=frac_low,
-        )
+        return top_patch
 
     def _generate_patches(self):
         _check_no_overlap(self.refinement_regions)
         mylog.info("Generating %d refinement patch(es).", len(self.refinement_regions))
-        self.patches = [
-            self._generate_patch(region, seed)
-            for region, seed in zip(self.refinement_regions, self._patch_seeds, strict=True)
+        seeds = self._patches_seed_seq.spawn(len(self.refinement_regions))
+        return [
+            self._generate_patch_chain(region, seed)
+            for region, seed in zip(self.refinement_regions, seeds, strict=True)
         ]
 
 
@@ -731,188 +816,3 @@ class VelocityRandomClusterField(RandomClusterField):
             prng=prng,
             refinement_regions=refinement_regions,
         )
-
-
-def _shrink_widths_to_avoid_overlap(centers, widths, margin):
-    r"""
-    Shrink patch widths, pairwise, so that no two of the (spherical
-    approximations of the) regions in ``centers``/``widths`` overlap,
-    leaving ``margin`` as a fractional buffer on top of that. Widths only
-    ever shrink, never grow, and clusters that never conflict with another
-    are left untouched.
-
-    Parameters
-    ----------
-    centers : list of ndarray
-        Cluster centers [kpc].
-    widths : list of float
-        Initial (pre-overlap-avoidance) widths [kpc], one per center.
-    margin : float
-        Fractional buffer subtracted from each pairwise center-to-center
-        distance before comparing against the sum of half-widths.
-
-    Returns
-    -------
-    list of float
-        The (possibly shrunk) widths.
-    """
-    n = len(centers)
-    widths = list(widths)
-    for _pass in range(n + 1):
-        changed = False
-        for i in range(n):
-            for j in range(i + 1, n):
-                dist = np.linalg.norm(centers[i] - centers[j])
-                allowed_sum = max(dist * (1.0 - margin), 0.0)
-                total = widths[i] + widths[j]
-                if total > allowed_sum:
-                    scale = allowed_sum / total if total > 0 else 0.0
-                    new_i, new_j = widths[i] * scale, widths[j] * scale
-                    mylog.info(
-                        "refinement_regions_for_clusters: clusters %d and %d are "
-                        "%.1f kpc apart; shrinking their widths from (%.1f, %.1f) "
-                        "to (%.1f, %.1f) kpc to avoid overlap.",
-                        i,
-                        j,
-                        dist,
-                        widths[i],
-                        widths[j],
-                        new_i,
-                        new_j,
-                    )
-                    widths[i], widths[j] = new_i, new_j
-                    changed = True
-        if not changed:
-            break
-    return widths
-
-
-def refinement_regions_for_clusters(
-    centers,
-    profiles,
-    profile_field,
-    width_frac=0.1,
-    refine_by=4,
-    padding=0.25,
-    taper_alpha=0.3,
-    r_max=None,
-    max_width=None,
-    overlap_margin=0.1,
-):
-    r"""
-    Build a ``refinement_regions`` list (see :class:`RandomClusterField`) with
-    one refinement patch centered on each cluster, sized automatically from
-    that cluster's own profile rather than picked by hand.
-
-    The width of each patch is set to twice the radius at which the
-    cluster's profile first falls to ``width_frac`` of its central (innermost
-    tabulated) value -- i.e. the patch spans out to where the field has
-    dropped off, not an arbitrary fixed size. Placement uses ``centers``
-    directly, so it stays in sync with whatever you pass as
-    ``ctr1``/``ctr2``/``ctr3`` to the field class's constructor.
-
-    A slowly-declining profile sampled out to large radii can produce a
-    width far bigger than intended (and, in turn, a patch grid so large it
-    exhausts memory) -- pass ``max_width`` (and/or ``r_max``) to guard
-    against this, especially the first time you use a given profile.
-
-    Parameters
-    ----------
-    centers : sequence of array-like
-        The cluster centers [kpc], in the same order as ``ctr1``, ``ctr2``,
-        ``ctr3`` passed to the field constructor.
-    profiles : sequence of ClusterModel, string, or (r, g) array-like
-        The corresponding profiles (``profile1``, ``profile2``, ``profile3``),
-        one per center.
-    profile_field : str
-        The name of the field that is being profiled.
-    width_frac : float or sequence of float, optional
-        The fraction of each profile's central value used to define its
-        patch width (see above). A single value applies to every cluster;
-        a sequence must match ``centers`` in length. Default: 0.1.
-    refine_by : int or sequence of int, optional
-        The refinement factor relative to the coarse grid's cell size (see
-        ``refinement_regions``). A single value applies to every cluster; a
-        sequence must match ``centers`` in length. Default: 4.
-    padding : float, optional
-        Shared padding fraction for every patch (see ``refinement_regions``).
-        Default: 0.25.
-    taper_alpha : float, optional
-        Shared Tukey taper parameter for every patch (see
-        ``refinement_regions``). Default: 0.3.
-    r_max : float, optional
-        If given, ignore profile values beyond this radius [kpc] when
-        determining each patch's width (matching the field constructor's own
-        ``r_max``).
-    max_width : float, optional
-        If given, cap every computed width at this value [kpc] (a hard
-        safety limit, applied after ``width_frac``/``r_max``). Default:
-        None (no cap).
-    overlap_margin : float, optional
-        After sizing, widths are shrunk (pairwise, never grown) so that no
-        two regions overlap -- clusters close together relative to their
-        computed widths get smaller patches instead of colliding. This is
-        the fractional buffer left on top of that, e.g. 0.1 keeps regions
-        at least 10% farther apart than the bare minimum. A shrink is
-        logged whenever it happens. Default: 0.1.
-
-    Returns
-    -------
-    list of dict
-        Ready to pass as ``refinement_regions`` to ``field_cls`` (or any
-        other :class:`RandomClusterField` subclass).
-    """
-    n = len(centers)
-    if len(profiles) != n:
-        raise ValueError("centers and profiles must have the same length.")
-
-    def _broadcast(value, name):
-        if np.isscalar(value):
-            return [value] * n
-        value = list(value)
-        if len(value) != n:
-            raise ValueError(f"'{name}' must be a scalar or have the same length as 'centers'.")
-        return value
-
-    width_fracs = _broadcast(width_frac, "width_frac")
-    refine_bys = _broadcast(refine_by, "refine_by")
-    centers_kpc = [np.asarray(parse_value(c, "kpc").v) for c in centers]
-
-    widths = []
-    for profile, wf in zip(profiles, width_fracs, strict=True):
-        r, g = _load_radial_profile(profile, profile_field)
-        r = parse_value(r, "kpc").v
-        g = np.abs(g.d if hasattr(g, "d") else np.asarray(g))
-        if r_max is not None:
-            keep = r <= r_max
-            r, g = r[keep], g[keep]
-        threshold = wf * g[0]
-        below = g <= threshold
-        idx = int(np.argmax(below)) if below.any() else len(r) - 1
-        width = 2.0 * r[idx]
-        if max_width is not None:
-            width = min(width, max_width)
-        widths.append(width)
-
-    widths = _shrink_widths_to_avoid_overlap(centers_kpc, widths, overlap_margin)
-
-    regions = []
-    for center, width, rb in zip(centers, widths, refine_bys, strict=True):
-        if width <= 0:
-            mylog.warning(
-                "refinement_regions_for_clusters: dropping the region at %s -- "
-                "its width shrank to zero avoiding overlap with another cluster "
-                "(they may coincide).",
-                center,
-            )
-            continue
-        regions.append(
-            {
-                "center": center,
-                "width": width,
-                "refine_by": rb,
-                "padding": padding,
-                "taper_alpha": taper_alpha,
-            }
-        )
-    return regions
