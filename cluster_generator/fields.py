@@ -816,3 +816,223 @@ class VelocityRandomClusterField(RandomClusterField):
             prng=prng,
             refinement_regions=refinement_regions,
         )
+
+
+_AXIS_NAMES = "xyz"
+
+
+def _read_field_node(h5group, comps, is_patch):
+    r"""
+    Read one node (the root, or a single patch/child group) of a field file
+    written by :meth:`ClusterField.write_file` into a plain dict -- ``x``,
+    ``y``, ``z`` coordinate arrays (converted to kpc using each dataset's
+    own ``units`` attribute, since :meth:`ClusterField.write_file`'s
+    ``length_unit`` need not be kpc -- e.g. GAMER's ``B_IC`` files are
+    commonly written in Mpc) and ``g`` (stacked field components, shape
+    ``(3, nx, ny, nz)``). Patches (``is_patch=True``) additionally carry
+    ``window`` and ``frac_low``, needed to blend them into their parent
+    (see :func:`plot_field_file`); the root has neither, since it has no
+    parent to blend into.
+    """
+    node = {ax: unyt_array(h5group[ax][:], h5group[ax].attrs["units"]).to_value("kpc") for ax in _AXIS_NAMES}
+    node["g"] = np.stack([h5group[c][:] for c in comps], axis=0)
+    if is_patch:
+        node["window"] = h5group["window"][:]
+        node["frac_low"] = h5group.attrs["frac_low"]
+    return node
+
+
+def _read_field_children(h5group, comps, prefix, count_attr):
+    r"""
+    Recursively read ``h5group``'s ``f"{prefix}_00"``, ``f"{prefix}_01"``,
+    ... subgroups (``count_attr`` many) into a list of node dicts (see
+    :func:`_read_field_node`), each with its own further-nested
+    ``"children"`` list -- mirroring :class:`FieldPatch`'s tree, but as
+    plain dicts read straight from the file rather than a live
+    :class:`ClusterField`.
+    """
+    n = int(h5group.attrs.get(count_attr, 0))
+    children = []
+    for i in range(n):
+        child_group = h5group[f"{prefix}_{i:02d}"]
+        node = _read_field_node(child_group, comps, is_patch=True)
+        node["children"] = _read_field_children(child_group, comps, "child", "num_children")
+        children.append(node)
+    return children
+
+
+def read_field_file(filename):
+    r"""
+    Read a field file written by :meth:`ClusterField.write_file` into a
+    plain (root, comps, units) tuple -- no yt or live :class:`ClusterField`
+    involved, just ``h5py``.
+
+    Parameters
+    ----------
+    filename : str
+        Path to an HDF5 file written by :meth:`ClusterField.write_file`.
+
+    Returns
+    -------
+    root : dict
+        The coarse grid, as a node dict (see :func:`_read_field_node`) with
+        a ``"children"`` list of any top-level ``refinement_regions``
+        patches (see :func:`_read_field_children`), each with its own
+        further-nested children.
+    comps : list of str
+        The three field component dataset names, e.g.
+        ``["magnetic_field_x", "magnetic_field_y", "magnetic_field_z"]``.
+    units : str
+        The field's units, as written by :meth:`ClusterField.write_file`.
+    """
+    with h5py.File(filename, "r") as f:
+        name = f.attrs["name"]
+        comps = [f"{name}_{ax}" for ax in _AXIS_NAMES]
+        root = _read_field_node(f, comps, is_patch=False)
+        root["children"] = _read_field_children(f, comps, "patch", "num_patches")
+        units = f.attrs["units"]
+    return root, comps, units
+
+
+def plot_field_file(
+    filename,
+    axis="z",
+    coord=0.0,
+    fig=None,
+    axes=None,
+    cmap="RdBu_r",
+    vmax=None,
+    show_grids=True,
+    grid_colors=("white", "orange", "red", "cyan"),
+):
+    r"""
+    Read a field file written by :meth:`ClusterField.write_file` (see
+    :func:`read_field_file`) and plot a slice through each component, with
+    box outlines showing where any locally-refined ``refinement_regions``
+    patches sit.
+
+    A patch's own on-disk data is only the small-scale *correction* on top
+    of its parent (see :class:`FieldPatch`) -- this reads the taper
+    ``window``/``frac_low`` back too and reconstructs the actual field the
+    same way :meth:`ClusterField._apply_patch` does at interpolation time
+    (2-D-interpolating the parent's already-blended slice onto each
+    child's own grid), rather than plotting a patch's raw data on its own,
+    which would look like a featureless, near-zero patch.
+
+    Parameters
+    ----------
+    filename : str
+        Path to an HDF5 file written by :meth:`ClusterField.write_file`.
+    axis : {'x', 'y', 'z'}, optional
+        The axis to slice along. Default: 'z'.
+    coord : float, optional
+        The coordinate [kpc] to slice at, along ``axis``. Default: 0.0.
+    fig : matplotlib Figure, optional
+        The figure to plot in. Default: None, in which case one is created.
+    axes : sequence of 3 matplotlib Axes, optional
+        The axes to plot the x/y/z components in, in that order. Default:
+        None, in which case three subplots are created.
+    cmap : str, optional
+        Colormap for the slice. Default: 'RdBu_r'.
+    vmax : float, optional
+        Symmetric color-scale limit (``-vmax`` to ``vmax``), shared across
+        the root grid and every patch so they blend consistently rather
+        than each rescaling to its own local range. Default: None, in
+        which case half the root grid's own max absolute value is used.
+    show_grids : bool, optional
+        Whether to outline each grid's (the root's and every patch's) box.
+        Default: True.
+    grid_colors : sequence of str, optional
+        Box outline color per nesting depth (cycled if there are more
+        levels than colors); index 0 is the root. Default: ``("white",
+        "orange", "red", "cyan")``.
+
+    Returns
+    -------
+    (fig, axes)
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+    from scipy.interpolate import RegularGridInterpolator
+
+    axis_idx = _AXIS_NAMES.index(axis)
+    plot_axes = [i for i in range(3) if i != axis_idx]
+    axis1_name, axis2_name = _AXIS_NAMES[plot_axes[0]], _AXIS_NAMES[plot_axes[1]]
+
+    root, comps, units = read_field_file(filename)
+    vmax = vmax if vmax is not None else 0.5 * np.max(np.abs(root["g"]))
+
+    def _slice_node(node):
+        coord_arr = node[axis]
+        if coord < coord_arr.min() or coord > coord_arr.max():
+            return None
+        k = int(np.argmin(np.abs(coord_arr - coord)))
+        c1 = node[axis1_name]
+        c2 = node[axis2_name]
+        slab = np.take(node["g"], k, axis=1 + axis_idx)  # (3, n1, n2)
+        window = np.take(node["window"], k, axis=axis_idx) if "window" in node else None
+        return c1, c2, slab, window
+
+    def _extent(c1, c2):
+        d1, d2 = c1[1] - c1[0], c2[1] - c2[0]
+        return (c1[0] - d1 / 2, c1[-1] + d1 / 2, c2[0] - d2 / 2, c2[-1] + d2 / 2)
+
+    def _plot_node(node, parent=None, depth=0):
+        sliced = _slice_node(node)
+        if sliced is None:
+            return
+        c1, c2, slab, window = sliced
+
+        if parent is not None:
+            p1, p2, ptotal = parent
+            correction = 1.0 - (1.0 - np.sqrt(node["frac_low"])) * window
+            g1, g2 = np.meshgrid(c1, c2, indexing="ij")
+            pts = np.stack([g1.ravel(), g2.ravel()], axis=-1)
+            total = np.empty_like(slab)
+            for i in range(3):
+                interp = RegularGridInterpolator((p1, p2), ptotal[i], bounds_error=False, fill_value=0.0)
+                total[i] = interp(pts).reshape(g1.shape) * correction + slab[i]
+        else:
+            total = slab
+
+        extent = _extent(c1, c2)
+        for i, ax_ in enumerate(axes):
+            ax_.imshow(
+                total[i].T, origin="lower", extent=extent, cmap=cmap, vmin=-vmax, vmax=vmax, zorder=depth
+            )
+            if show_grids:
+                ax_.add_patch(
+                    Rectangle(
+                        (extent[0], extent[2]),
+                        extent[1] - extent[0],
+                        extent[3] - extent[2],
+                        fill=False,
+                        edgecolor=grid_colors[depth % len(grid_colors)],
+                        linewidth=1.2,
+                        zorder=10 + depth,
+                    )
+                )
+
+        for child in node.get("children", []):
+            _plot_node(child, parent=(c1, c2, total), depth=depth + 1)
+
+    if fig is None or axes is None:
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5), constrained_layout=True)
+
+    _plot_node(root)
+
+    # Multiple overlaid imshow() extents otherwise leave the view autoscaled
+    # to whichever patch was drawn last, not the full (root) domain.
+    root_extent = _extent(root[axis1_name], root[axis2_name])
+
+    for ax_, comp in zip(axes, comps, strict=True):
+        ax_.set_title(comp)
+        ax_.set_xlabel(f"{axis1_name} (kpc)")
+        ax_.set_ylabel(f"{axis2_name} (kpc)")
+        ax_.set_xlim(root_extent[0], root_extent[1])
+        ax_.set_ylim(root_extent[2], root_extent[3])
+        ax_.set_aspect("equal")
+
+    fig.suptitle(f"Slice at {axis}={coord} kpc [{units}]")
+
+    return fig, axes
