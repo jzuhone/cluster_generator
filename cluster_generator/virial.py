@@ -5,13 +5,24 @@ Module containing methods for particle virialization.
 from collections import OrderedDict
 
 import numpy as np
-from scipy.interpolate import InterpolatedUnivariateSpline
+from scipy.interpolate import BSpline, InterpolatedUnivariateSpline, splrep
 from tqdm.auto import tqdm
 from unyt import unyt_array
 
 from cluster_generator.opt.cython_utils import generate_velocities
 from cluster_generator.particles import ClusterParticles
 from cluster_generator.utils import cgparams, generate_particle_radii, mylog, quad
+
+
+def _make_distribution_function_spline(x, y, k=3):
+    """
+    Build a cubic (by default) B-spline interpolating ``(x, y)``, exposing
+    the raw ``t``/``c``/``k`` knot/coefficient/degree arrays as public
+    attributes so they can be handed to :func:`generate_velocities` without
+    relying on any private scipy API.
+    """
+    t, c, k = splrep(x, y, k=k, s=0)
+    return BSpline(t, c, k, extrapolate=True)
 
 
 class VirialEquilibrium:
@@ -39,7 +50,7 @@ class VirialEquilibrium:
         else:
             self.df = df
             f = df.d[::-1]
-            self.f = InterpolatedUnivariateSpline(self.ee, f)
+            self.f = _make_distribution_function_spline(self.ee, f)
 
     def _generate_df(self):
         pden = self.model[f"{self.ptype}_density"][::-1]
@@ -68,7 +79,7 @@ class VirialEquilibrium:
         pbar.close()
         g_spline = InterpolatedUnivariateSpline(self.ee, g)
         ff = g_spline(self.ee, 1) / (np.sqrt(8.0) * np.pi**2)
-        self.f = InterpolatedUnivariateSpline(self.ee, ff)
+        self.f = _make_distribution_function_spline(self.ee, ff)
         self.df = unyt_array(ff[::-1], "Msun*Myr**3/kpc**6")
 
     @property
@@ -201,9 +212,9 @@ class VirialEquilibrium:
             psi,
             vesc,
             fv2esc,
-            self.f.get_knots(),
-            self.f.get_coeffs(),
-            self.f._eval_args[2],
+            self.f.t,
+            self.f.c,
+            self.f.k,
             int(~cgparams["system"]["display"]["progress_bars"]),
         )
 

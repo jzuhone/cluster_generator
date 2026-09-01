@@ -18,13 +18,6 @@ cimport numpy as np
 
 np.import_array() # --> fix numpy error at runtime for not having it. Why do we need this?
 
-try:
-    # See https://github.com/scipy/scipy/issues/16729 and related issues. This may need continual updating as
-    # Scipy continues to update its conventions for interfacing with Dierckx FITPACK.
-    from scipy.interpolate import _dfitpack  # noqa
-except ImportError:
-    from scipy.interpolate import dfitpack as _dfitpack #noqa
-
 from tqdm.auto import tqdm
 
 
@@ -44,6 +37,45 @@ ctypedef np.float64_t DTYPE_t
 CTYPE = np.complex128
 ctypedef np.complex128_t CTYPE_t
 
+# Maximum supported spline degree for the fixed-size de Boor work buffer
+# below. Splines used throughout this package are cubic (k=3), so this
+# leaves a generous margin.
+DEF MAX_SPLINE_DEGREE = 15
+
+@cython.cdivision(True)
+cdef inline DTYPE_t bspline_eval(double *t, double *c, int n_knots, int k,
+                                  DTYPE_t x) nogil:
+    """
+    Evaluate, at the scalar point `x`, the B-spline of degree `k` defined
+    by the full FITPACK-style knot array `t` (length `n_knots`) and
+    coefficient array `c`, using de Boor's algorithm.
+
+    This reproduces the zero-order, extrapolating evaluation that
+    ``scipy.interpolate.BSpline(t, c, k, extrapolate=True)`` gives, but
+    depends only on the mathematical definition of a B-spline rather than
+    on any private scipy/FITPACK interface, so it cannot be broken by
+    scipy internals changing across versions.
+    """
+    cdef int hi = n_knots - k - 2
+    cdef int i = k
+    cdef int j, r
+    cdef DTYPE_t d[MAX_SPLINE_DEGREE + 1]
+    cdef DTYPE_t alpha
+
+    while i < hi and x >= t[i + 1]:
+        i += 1
+
+    for j in range(k + 1):
+        d[j] = c[i - k + j]
+
+    for r in range(1, k + 1):
+        for j in range(k, r - 1, -1):
+            alpha = (x - t[j + i - k]) / (t[j + i - r + 1] - t[j + i - k])
+            d[j] = (1.0 - alpha) * d[j - 1] + alpha * d[j]
+
+    return d[k]
+
+
 @cython.wraparound(False)
 @cython.boundscheck(False)
 @cython.cdivision(True)
@@ -54,19 +86,22 @@ def generate_velocities(np.ndarray[DTYPE_t, ndim=1] psi,
                         np.ndarray[DTYPE_t, ndim=1] c,
                         int k,
                         int pbar_status):
-    cdef DTYPE_t v2,
+    cdef DTYPE_t v2, e, f
     cdef np.uint8_t not_done
     cdef unsigned int i
-    cdef int num_particles, der, ext
+    cdef int num_particles, n_knots
     cdef long int seedval
-    cdef np.ndarray[np.float64_t, ndim=1] velocity, e, f
-    e = np.zeros(1)
-    f = np.zeros(1)
+    cdef np.ndarray[np.float64_t, ndim=1] velocity
+    cdef double *t_ptr = &t[0]
+    cdef double *c_ptr = &c[0]
+
+    if k > MAX_SPLINE_DEGREE:
+        raise ValueError(f"Spline degree k={k} exceeds the maximum supported degree "
+                          f"({MAX_SPLINE_DEGREE}).")
 
     seedval = -100
     srand48(seedval)
-    der = 0
-    ext = 0
+    n_knots = t.shape[0]
     num_particles = psi.shape[0]
     velocity = np.zeros(num_particles, dtype='float64')
     pbar = tqdm(leave=True, total=num_particles,
@@ -77,9 +112,9 @@ def generate_velocities(np.ndarray[DTYPE_t, ndim=1] psi,
         while not_done:
             v2 = drand48()*vesc[i]
             v2 *= v2
-            e[0] = psi[i]-0.5*v2
-            f[0] = _dfitpack.splev(t, c, k, e, ext)[0][0] # see https://github.com/numpy/numpy/pull/10615
-            not_done = f[0]*v2 < drand48()*fv2esc[i]
+            e = psi[i]-0.5*v2
+            f = bspline_eval(t_ptr, c_ptr, n_knots, k, e)
+            not_done = f*v2 < drand48()*fv2esc[i]
         velocity[i] = sqrt(v2)
         pbar.update()
     pbar.close()
