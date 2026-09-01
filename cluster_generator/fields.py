@@ -526,8 +526,7 @@ class RandomClusterField(ClusterField):
         callers are responsible for normalizing a raw GRF realization to
         match it (dividing by that realization's own rms).
         """
-        print(self.dx)
-        mylog.info("Scaling the fields by cluster 1.")
+        mylog.debug("Scaling the fields by cluster 1.")
         rr = np.sqrt(
             (x[:, np.newaxis, np.newaxis] - self.ctr1[0]) ** 2
             + (y[np.newaxis, :, np.newaxis] - self.ctr1[1]) ** 2
@@ -539,7 +538,7 @@ class RandomClusterField(ClusterField):
         dr = (rr - self.r1[idxs]) / (self.r1[idxs + 1] - self.r1[idxs])
         g_rms = ((1.0 - dr) * self.g1[idxs] + dr * self.g1[idxs + 1]) ** 2
         if self.num_halos >= 2:
-            mylog.info("Scaling the fields by cluster 2.")
+            mylog.debug("Scaling the fields by cluster 2.")
             rr = np.sqrt(
                 (x[:, np.newaxis, np.newaxis] - self.ctr2[0]) ** 2
                 + (y[np.newaxis, :, np.newaxis] - self.ctr2[1]) ** 2
@@ -551,7 +550,7 @@ class RandomClusterField(ClusterField):
             dr = (rr - self.r2[idxs]) / (self.r2[idxs + 1] - self.r2[idxs])
             g_rms += ((1.0 - dr) * self.g2[idxs] + dr * self.g2[idxs + 1]) ** 2
         if self.num_halos == 3:
-            mylog.info("Scaling the fields by cluster 3.")
+            mylog.debug("Scaling the fields by cluster 3.")
             rr = np.sqrt(
                 (x[:, np.newaxis, np.newaxis] - self.ctr3[0]) ** 2
                 + (y[np.newaxis, :, np.newaxis] - self.ctr3[1]) ** 2
