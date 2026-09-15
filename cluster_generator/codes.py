@@ -118,9 +118,13 @@ def setup_gamer_ics(ics, regenerate_particles=False, use_tracers=False):
     for line in outlines:
         print(line)
     if ics.mag_file is not None:
+        if ics.mag_file != "B_IC":
+            msg_prefix = f"Rename the file '{ics.mag_file}' to 'B_IC'" \
+                         f"and place it"
+        else:
+            msg_prefix = "Place the file 'B_IC'"
         mylog.info(
-            f"Rename the file '{ics.mag_file}' to 'B_IC' "
-            f"and place it in the same directory as the "
+            f"{msg_prefix} in the same directory as the "
             f"Input__* files, and set OPT__INIT_BFIELD_BYFILE "
             f"to 1 in Input__Parameter"
         )
