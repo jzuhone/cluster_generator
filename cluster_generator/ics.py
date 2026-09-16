@@ -16,7 +16,7 @@ from cluster_generator.particles import (
     resample_three_clusters,
     resample_two_clusters,
 )
-from cluster_generator.utils import ensure_list, ensure_ytarray, parse_prng
+from cluster_generator.utils import ensure_list, ensure_ytarray, parse_prng, mylog
 
 
 def compute_centers_for_binary(center, d, b, a=0.0):
@@ -150,6 +150,9 @@ class ClusterICs:
             else:
                 ntp = 0
             self.num_particles["tracer"].append(ntp)
+        for ptype, mass in zip(["dm", "gas", "star"], [tot_dm_mass, tot_gas_mass, tot_star_mass]):
+            if self.tot_np.get(ptype, 0) > 0:
+                mylog.info("%s particle mass is %g.", ptype, mass/self.tot_np[ptype])
 
     def _generate_particles(self, regenerate_particles=False, prng=None):
         prng = parse_prng(prng)

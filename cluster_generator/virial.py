@@ -171,7 +171,7 @@ class VirialEquilibrium:
         prng = parse_prng(prng)
 
         mylog.info("We will be assigning %s %s particles.", num_particles, self.ptype)
-        mylog.info("Compute %s particle positions.", num_particles)
+        mylog.info("Compute %s particle positions.", self.ptype)
 
         nonzero = self.model[density] > 0.0
         radius_sub, mtot = generate_particle_radii(

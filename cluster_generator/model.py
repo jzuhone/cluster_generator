@@ -897,7 +897,7 @@ class ClusterModel:
 
         prng = parse_prng(prng)
         mylog.info("We will be assigning %d tracer particles.", num_particles)
-        mylog.info("Compute particle positions.")
+        mylog.info("Compute tracer particle positions.")
 
         num_particles_sub = num_particles // sub_sample
 
@@ -973,7 +973,7 @@ class ClusterModel:
 
         prng = parse_prng(prng)
         mylog.info("We will be assigning %d gas particles.", num_particles)
-        mylog.info("Compute particle positions.")
+        mylog.info("Compute gas particle positions.")
 
         num_particles_sub = num_particles // sub_sample
 
