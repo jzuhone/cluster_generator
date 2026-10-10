@@ -213,6 +213,7 @@ Contents
    gravity
    models
    collections
+   substructure
    examples
    api
 
