@@ -37,11 +37,8 @@ extensions = [
     "myst_parser",
     "sphinx.ext.mathjax",
     "sphinx_copybutton",
-    "sphinxcontrib.blockdiag",
-    "sphinxcontrib.mermaid",
     "nbsphinx",
     "sphinx_design",
-    "hoverxref.extension",
 ]
 
 # Add any paths that contain templates here, relative to this directory.
