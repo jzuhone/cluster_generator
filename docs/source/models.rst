@@ -21,9 +21,6 @@ enforce hydrostatic equilibrium, virialize halos, and generate intial conditions
 
 Cluster Models: Mathematical Overview
 =====================================
-.. admonition:: Reader Suggestion
-
-    To learn more about the various gravity theories discussed here, see the :ref:`gravity` page.
 
 The Intracluster Medium (ICM)
 ''''''''''''''''''''''''''''''
@@ -46,12 +43,6 @@ acceleration. The assumption of hydrostatic equilibrium implies that
 .. math::
 
     \nabla{P} = \rho_g{\bf g}
-
-We therefore define the "hydrostatic vector", :math:`\Gamma` of the system to be
-
-.. math::
-
-    \Gamma = -\frac{\nabla P}{\rho_g} = \nabla \Phi.
 
 In the context of galaxy clusters, we may typically assume an ideal gas behavior for the ICM, and therefore,
 
