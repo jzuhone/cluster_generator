@@ -10,55 +10,19 @@
 system:
   # -- These are system-wide settings for basic usage. -- #
   logging:
-    main:
-      enabled: true # Use this to disable any logging. This will stop output to terminal!
-      format: "%(name)-3s : [%(levelname)-9s] %(asctime)s %(message)s" # Logger's string format for output
-      level: "INFO" # Only logging passed to this level or higher are displayed.
-      stream: "STDERR" # Can be STDERR or STDOUT.
-    developer:
-      # ! The developer logger passes detailed logging messages to file
-      enabled: false
-      output_directory: null # You have to set this before the development logger will function.
+    enabled: true # Use this to disable any logging. This will stop output to terminal!
+    format: "%(name)-3s : [%(levelname)-9s] %(asctime)s %(message)s" # Logger's string format for output
+    level: "INFO" # Only logging passed to this level or higher are displayed.
+    stream: "STDERR" # Can be STDERR or STDOUT.
 
   display:
     # Display settings change how cluster_generator appears when in use.
-    spinners: true # [WARNING] Requires Halo to be installed.
     progress_bars: true
 
 #======================================================================================================================#
 physics:
   # -- The physics settings are basic user-configurable physical parameters -- #
   hydrogen_abundance: 0.76 # The primordial hydrogen abundance (0.76 generally accepted value)
-
-#======================================================================================================================#
-gravity:
-  # -- These settings are all regarding the gravity systems in cluster generator -- #
-  general:
-    # -- General gravity settings for types / classes of gravity -- #
-    mond:
-      # -- MOND specific settings -- #
-      a0: !unyt # The acceleration threshold constant for MOND. typically 1.2e-10 m/s^2
-        input_scalar: 1.2e-10
-        units: "m/s**2"
-  QUMOND:
-    # - Settings for the QUMOND implementation - #
-    interpolation_function: !lambda "lambda x: ((1 / 2) * (np.sqrt(1 + (4 / x)) + 1))"
-  AQUAL:
-    # - Settings for the AQUAL implementation - #
-    interpolation_function: !lambda "lambda x: x/(1+x)"
-  EMOND:
-    # - Settings for the EMOND implementation - #
-    a0_function: !lambda "lambda x,a=0.003868,A=0.30944,p0=-7.614: a + (A-a)*(0.5*np.tanh(np.log10(x/p0)**2) + 0.5)"
-
-#======================================================================================================================#
-numerical:
-  # -- These are settings regarding the numerical methods implemented in the code -- #
-  implicit:
-    # -- These are settings for implicit function solutions in alternative gravity theories -- #
-    check_tolerance: !!float 1e-7 # The tolerance below which we skip optimization because the guess is sufficiently good.
-    solve_tolerance: !!float 1e-7 # The tolerance required once the code actually reaches the implicit solver.
-    max_calls: !!int 100 # The maximum number of function calls to the Gauss-Newton solver.
-    max_runtime: !!int 120 # The maximum allowed runtime for the implicit solver (s).
 
 #======================================================================================================================#
 plotting:
