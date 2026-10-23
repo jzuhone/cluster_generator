@@ -94,9 +94,6 @@ Python packages:
 - `h5py <http://www.h5py.org>`_ [h5 file interaction]
 - `tqdm <https://tqdm.github.io>`_ [Progress bars]
 - `ruamel.yaml <https://yaml.readthedocs.io>`_ [yaml support]
-- `dill <https://github.com/uqfoundation/dill>`_ [Serialization]
-- `halo <https://github.com/manrajgrover/halo>`_ [Progress Spinners]
-- `pandas <https://github.com/pandas-dev/pandas>`_ [Dataset Manipulations]
 
 These will be installed automatically if you use ``pip`` or ``conda`` as detailed below.
 
@@ -119,7 +116,6 @@ These will be installed automatically if you use ``pip`` or ``conda`` as detaile
 Getting Started
 ===============
 
-
 To begin using ``cluster_generator``, first install the library by following the instructions in the :ref:`installation` section.
 
 Once you've installed the package, have a look at the note on unit conventions (:ref:`here<units>`). Once you're familiar with the units,
@@ -128,59 +124,6 @@ we recommend you begin on this page by reading through our quickstart guide to g
 .. raw:: html
 
    <hr style="height:2px;background-color:black">
-
-Quickstart Guides
-+++++++++++++++++
-
-.. card-carousel:: 2
-
-    .. card:: The Basics
-        :link: notebooks/quick_notebooks/quickbook
-        :link-type: doc
-
-        **Length**: 10 minutes
-        ^^^
-        Get a basic understanding of the ``cluster_generator`` library and its capabilities. Suitable for first time users.
-        +++
-        :doc:`Quickstart Guide: The Basics <notebooks/quick_notebooks/quickbook>`
-
-
-    .. card:: Your First Simulation
-        :link: notebooks/quick_notebooks/quickbook2
-        :link-type: doc
-
-        **Length**: 20 minutes
-        ^^^
-        So you know the basics, but you want to start actually doing your science? Use this guide as a reference for the
-        entire process of initializing and simulating a cluster from ``cluster_generator``. This guide uses RAMSES as an
-        example.
-        +++
-        :doc:`Quickstart Guide: Your First Simulation <notebooks/quick_notebooks/quickbook2>`
-
-    .. card:: Getting the Most Out CG
-        :link: notebooks/quick_notebooks/quickbook3
-        :link-type: doc
-
-        **Length**: 40 minutes
-        ^^^
-        Starting to feel like you know the ropes? This guide will give you some deeper insight into the functionality of the
-        library and teach you to use advanced resources like alternative virialization methods, saving profiles, and accessing
-        collections.
-        +++
-        :doc:`Quickstart Guide: Getting the Most Out of  CG <notebooks/quick_notebooks/quickbook3>`
-
-    .. card:: Getting Funky: MONDian Gravity
-        :link: notebooks/quick_notebooks/quickbook4
-        :link-type: doc
-
-        **Length**: 20 minutes
-        ^^^
-        Feeling ready to jump down a rabbit hole? This guide will show you how to use the MONDian gravity theories built
-        into cluster generator!
-        +++
-        :doc:`Quickstart Guide: Getting Funky - MONDian Gravity <notebooks/quick_notebooks/quickbook4>`
-
-
 
 If you're already somewhat familiar with
 the code and you're looking for something a little more in depth, the following sections may provide a more concrete introduction to

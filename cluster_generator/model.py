@@ -126,7 +126,7 @@ class ClusterModel:
     @property
     def star_virial(self) -> VirialEquilibrium:
         """
-        The equilibrium model (VirialEquilibrium`) for the stellar
+        The equilibrium model (VirialEquilibrium) for the stellar
         component of this model.
         """
         if self._star_virial is None and "stellar_density" in self:
