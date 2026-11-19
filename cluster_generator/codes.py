@@ -95,18 +95,19 @@ def setup_gamer_ics(ics, regenerate_particles=False, use_tracers=False):
     parts = ics._generate_particles(regenerate_particles=regenerate_particles)
     outlines = [f"Merger_Coll_NumHalos\t\t{ics.num_halos}\t# number of halos"]
     for i in range(ics.num_halos):
-        particle_file = f"{ics.basename}_gamerp_{i + 1}.h5"
+        loc_dir = Path(ics.profiles[i]).parent
+        particle_file = loc_dir / f"{ics.basename}_gamerp_{i + 1}.h5"
         if ics.num_particles["star"][i] == 0:
             ptypes = gamer_ptypes[:-1]
         else:
             ptypes = gamer_ptypes
         write_amr_particles(parts[i], particle_file, ptypes, gamer_ptype_num, in_cgs=True, format="hdf5")
-        hse_file_gamer = ics.profiles[i].replace(".h5", "_gamer.h5")
+        hse_file_gamer = Path(ics.profiles[i].replace(".h5", "_gamer.h5"))
         hses[i].write_model_to_h5(hse_file_gamer, overwrite=True, in_cgs=True, r_max=ics.r_max[i])
         vel = ics.velocity[i].to_value("km/s")
         outlines += [
-            f"Merger_File_Prof{i + 1}\t\t{hse_file_gamer}\t# profile table of cluster {i + 1}",
-            f"Merger_File_Par{i + 1}\t\t{particle_file}\t# particle file of cluster {i + 1}",
+            f"Merger_File_Prof{i + 1}\t\t{hse_file_gamer.name}\t# profile table of cluster {i + 1}",
+            f"Merger_File_Par{i + 1}\t\t{particle_file.name}\t# particle file of cluster {i + 1}",
             f"Merger_Coll_PosX{i + 1}\t\t{ics.center[i][0].v}\t# X-center of cluster {i + 1} in kpc",
             f"Merger_Coll_PosY{i + 1}\t\t{ics.center[i][1].v}\t# Y-center of cluster {i + 1} in kpc",
             f"Merger_Coll_PosZ{i + 1}\t\t{ics.center[i][2].v}\t# Z-center of cluster {i + 1} in kpc",

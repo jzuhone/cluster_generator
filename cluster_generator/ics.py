@@ -179,7 +179,8 @@ class ClusterICs:
                     )
                     p = p + tp
                 parts.append(p)
-                outfile = f"{self.basename}_{i}_particles.h5"
+                loc_dir = Path(self.profiles[i]).parent
+                outfile = loc_dir / f"{self.basename}_{i}_particles.h5"
                 p.write_particles(outfile, overwrite=True)
                 self.particle_files[i] = outfile
             else:
