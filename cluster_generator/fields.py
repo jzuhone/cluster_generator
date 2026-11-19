@@ -54,6 +54,74 @@ class FieldPatch:
     children: list = field(default_factory=list)
 
 
+def _blend_patch_field(ancestors, patch):
+    r"""
+    Blend ``patch``'s own high-k-only field (see :class:`FieldPatch`) with
+    the chain of its ancestors -- the root, then every enclosing, coarser
+    patch, in order -- evaluated at ``patch``'s own grid points, using the
+    same taper-based correction as :meth:`ClusterField._apply_patch`.
+
+    Each ancestor's contribution is interpolated directly from *its own*
+    native ``g``/``window`` arrays (never from an already-regridded
+    intermediate), exactly mirroring what repeated calls to
+    :meth:`ClusterField._apply_patch` would do at these same points -- so
+    this reproduces that lazy, per-query-point algorithm exactly, just
+    evaluated once over ``patch``'s whole grid, at write time (see
+    :func:`_blend_patches`/:meth:`ClusterField.write_file`). What ends up
+    on disk is already the final, fully-blended field, so a reader never
+    needs ``window``/``frac_low`` (or any other blending metadata) at all
+    -- just field data.
+    """
+    from scipy.interpolate import RegularGridInterpolator
+
+    g1, g2, g3 = np.meshgrid(patch.x, patch.y, patch.z, indexing="ij")
+    pts = np.stack([g1.ravel(), g2.ravel(), g3.ravel()], axis=-1)
+
+    v = np.zeros((pts.shape[0], 3))
+    for ancestor in ancestors:
+        w_func = RegularGridInterpolator(
+            (ancestor.x, ancestor.y, ancestor.z), ancestor.window, bounds_error=False, fill_value=0.0
+        )
+        correction = 1.0 - (1.0 - np.sqrt(ancestor.frac_low)) * w_func(pts)
+        for i in range(3):
+            g_func = RegularGridInterpolator(
+                (ancestor.x, ancestor.y, ancestor.z), ancestor.g[i, ...], bounds_error=False, fill_value=0.0
+            )
+            v[:, i] = v[:, i] * correction + g_func(pts)
+
+    # patch's own data, evaluated exactly at its own grid nodes -- plain
+    # array lookups, no interpolation (and so no error) involved
+    correction = 1.0 - (1.0 - np.sqrt(patch.frac_low)) * patch.window
+    blended = np.empty_like(patch.g)
+    for i in range(3):
+        blended[i] = v[:, i].reshape(g1.shape) * correction + patch.g[i]
+    return blended
+
+
+def _blend_patches(patches, ancestors, level=1, flat=None):
+    r"""
+    Recursively blend a list of :class:`FieldPatch` trees (each node's own
+    ``children``, arbitrarily nested; see :func:`_blend_patch_field`) and
+    flatten them into a single depth-first list of
+    ``(patch, level, blended_g)`` triples, ``level`` counting from 1 for a
+    top-level patch (nested directly inside the root). ``ancestors`` is the
+    chain of nodes (starting with the root) that every patch in ``patches``
+    is nested inside.
+
+    This lets every patch be written as its own flat HDF5 group, carrying
+    only its own already-blended field and nesting depth -- no
+    parent/child reference, ``window``, or ``frac_low`` at all (see
+    :meth:`ClusterField.write_file`).
+    """
+    if flat is None:
+        flat = []
+    for patch in patches:
+        blended = _blend_patch_field(ancestors, patch)
+        flat.append((patch, level, blended))
+        _blend_patches(patch.children, (*ancestors, patch), level + 1, flat)
+    return flat
+
+
 def parse_value(value, default_units):
     """
     Parses an array of values into the correct units.
@@ -274,34 +342,31 @@ class ClusterField:
                 f.attrs["units"] = self.units
                 f.attrs["vector_potential"] = int(self._vector_potential)
                 f.attrs["divergence_clean"] = int(self._divergence_clean)
-                f.attrs["num_patches"] = np.int32(len(patches))
-                for i, patch in enumerate(patches):
-                    grp = f.create_group(f"patch_{i:02d}")
-                    self._write_patch(grp, patch, length_unit, field_unit)
+                flat_patches = _blend_patches(patches, (self.root,) if self.root is not None else ())
+                f.attrs["num_patches"] = np.int32(len(flat_patches))
+                for i, (patch, level, blended_g) in enumerate(flat_patches):
+                    grp = f.create_group(f"patch_{i:04d}")
+                    grp.attrs["level"] = np.int32(level)
+                    self._write_patch(grp, patch, blended_g, length_unit, field_unit)
 
-    def _write_patch(self, grp, patch, length_unit, field_unit):
+    def _write_patch(self, grp, patch, blended_g, length_unit, field_unit):
         r"""
-        Recursively write a :class:`FieldPatch` -- and any further-refined
-        ``patch.children`` -- to an open HDF5 group as nested subgroups
-        (``child_00``, ``child_01``, ...), mirroring the nesting of
-        ``refinement_regions``.
+        Write a single patch's own coordinates and its already-blended
+        field (see :func:`_blend_patches`) to an open HDF5 group. Its
+        place in the patch tree is recorded separately, as a flat
+        ``level`` (see :meth:`write_file`), so this never recurses into
+        ``patch.children`` itself.
         """
-        grp.attrs["frac_low"] = patch.frac_low
-        grp.attrs["num_children"] = np.int32(len(patch.children))
-        grp.create_dataset("window", data=patch.window)
         for ax, arr in zip("xyz", (patch.x, patch.y, patch.z), strict=True):
             pd = unyt_array(arr, "kpc").to(length_unit)
             d = grp.create_dataset(ax, data=pd.d)
             d.attrs["units"] = str(pd.units)
         for j, ax in enumerate("xyz"):
-            pfd = unyt_array(patch.g[j, ...], self.units)
+            pfd = unyt_array(blended_g[j, ...], self.units)
             if field_unit is not None:
                 pfd = pfd.to(f"{length_unit}*{field_unit}" if self._vector_potential else field_unit)
             d = grp.create_dataset(f"{self._name}_{ax}", data=pfd.d)
             d.attrs["units"] = str(pfd.units)
-        for i, child in enumerate(patch.children):
-            child_grp = grp.create_group(f"child_{i:02d}")
-            self._write_patch(child_grp, child, length_unit, field_unit)
 
     def _interpolate_at_points(self, coords):
         r"""
@@ -820,51 +885,54 @@ class VelocityRandomClusterField(RandomClusterField):
 _AXIS_NAMES = "xyz"
 
 
-def _read_field_node(h5group, comps, is_patch):
+def _read_field_node(h5group, comps):
     r"""
-    Read one node (the root, or a single patch/child group) of a field file
+    Read one node (the root, or a single patch group) of a field file
     written by :meth:`ClusterField.write_file` into a plain dict -- ``x``,
     ``y``, ``z`` coordinate arrays (converted to kpc using each dataset's
     own ``units`` attribute, since :meth:`ClusterField.write_file`'s
     ``length_unit`` need not be kpc -- e.g. GAMER's ``B_IC`` files are
     commonly written in Mpc) and ``g`` (stacked field components, shape
-    ``(3, nx, ny, nz)``). Patches (``is_patch=True``) additionally carry
-    ``window`` and ``frac_low``, needed to blend them into their parent
-    (see :func:`plot_field_file`); the root has neither, since it has no
-    parent to blend into.
+    ``(3, nx, ny, nz)``). Every node -- the root or any patch -- has
+    exactly this shape: a patch's own field is already the final, blended
+    one (see :func:`_blend_patches`), so there's no extra blending data
+    (``window``/``frac_low``) to carry.
     """
     node = {ax: unyt_array(h5group[ax][:], h5group[ax].attrs["units"]).to_value("kpc") for ax in _AXIS_NAMES}
     node["g"] = np.stack([h5group[c][:] for c in comps], axis=0)
-    if is_patch:
-        node["window"] = h5group["window"][:]
-        node["frac_low"] = h5group.attrs["frac_low"]
     return node
 
 
-def _read_field_children(h5group, comps, prefix, count_attr):
+def _read_patches(f, comps):
     r"""
-    Recursively read ``h5group``'s ``f"{prefix}_00"``, ``f"{prefix}_01"``,
-    ... subgroups (``count_attr`` many) into a list of node dicts (see
-    :func:`_read_field_node`), each with its own further-nested
-    ``"children"`` list -- mirroring :class:`FieldPatch`'s tree, but as
-    plain dicts read straight from the file rather than a live
-    :class:`ClusterField`.
+    Read the flat ``patch_NNNN`` groups written by
+    :meth:`ClusterField.write_file` (see :func:`_blend_patches`) into a
+    flat list of node dicts (see :func:`_read_field_node`), each tagged
+    with its own ``"level"`` (1 for a patch nested directly inside the
+    root, 2 for one nested inside a level-1 patch, etc.).
+
+    Each patch's own field is already the fully-blended one -- there's no
+    parent/child reference, ``window``, or ``frac_low`` to read back, and
+    (unlike the pre-blended data itself) nothing here depends on knowing
+    which patch sits inside which; :func:`plot_field_file` only needs to
+    draw patches in increasing ``level`` order so finer ones land on top.
+    This keeps the on-disk format itself down to "a flat list of boxes,
+    each with a level and its own field data" -- something any tool can
+    write, with no tree bookkeeping of its own.
     """
-    n = int(h5group.attrs.get(count_attr, 0))
-    children = []
-    for i in range(n):
-        child_group = h5group[f"{prefix}_{i:02d}"]
-        node = _read_field_node(child_group, comps, is_patch=True)
-        node["children"] = _read_field_children(child_group, comps, "child", "num_children")
-        children.append(node)
-    return children
+    n = int(f.attrs.get("num_patches", 0))
+    groups = [f[f"patch_{i:04d}"] for i in range(n)]
+    nodes = [_read_field_node(grp, comps) for grp in groups]
+    for node, grp in zip(nodes, groups, strict=True):
+        node["level"] = int(grp.attrs["level"])
+    return nodes
 
 
 def read_field_file(filename):
     r"""
     Read a field file written by :meth:`ClusterField.write_file` into a
-    plain (root, comps, units) tuple -- no yt or live :class:`ClusterField`
-    involved, just ``h5py``.
+    plain (root, patches, comps, units) tuple -- no yt or live
+    :class:`ClusterField` involved, just ``h5py``.
 
     Parameters
     ----------
@@ -874,10 +942,14 @@ def read_field_file(filename):
     Returns
     -------
     root : dict
-        The coarse grid, as a node dict (see :func:`_read_field_node`) with
-        a ``"children"`` list of any top-level ``refinement_regions``
-        patches (see :func:`_read_field_children`), each with its own
-        further-nested children.
+        The coarse grid, as a node dict (see :func:`_read_field_node`).
+    patches : list of dict
+        Any locally-refined patches (see :func:`_read_patches`), as a flat
+        list of node dicts, each also carrying its own nesting ``"level"``
+        (1 for a patch nested directly inside the root, 2 for one nested
+        inside a level-1 patch, etc.) -- empty if the file has none. Every
+        patch's own field is already fully blended with its parent's (see
+        :func:`_blend_patches`), so there's no tree to reconstruct here.
     comps : list of str
         The three field component dataset names, e.g.
         ``["magnetic_field_x", "magnetic_field_y", "magnetic_field_z"]``.
@@ -887,10 +959,10 @@ def read_field_file(filename):
     with h5py.File(filename, "r") as f:
         name = f.attrs["name"]
         comps = [f"{name}_{ax}" for ax in _AXIS_NAMES]
-        root = _read_field_node(f, comps, is_patch=False)
-        root["children"] = _read_field_children(f, comps, "patch", "num_patches")
+        root = _read_field_node(f, comps)
+        patches = _read_patches(f, comps)
         units = f.attrs["units"]
-    return root, comps, units
+    return root, patches, comps, units
 
 
 def plot_field_file(
@@ -907,16 +979,13 @@ def plot_field_file(
     r"""
     Read a field file written by :meth:`ClusterField.write_file` (see
     :func:`read_field_file`) and plot a slice through each component, with
-    box outlines showing where any locally-refined ``refinement_regions``
-    patches sit.
+    box outlines showing where any locally-refined patches sit.
 
-    A patch's own on-disk data is only the small-scale *correction* on top
-    of its parent (see :class:`FieldPatch`) -- this reads the taper
-    ``window``/``frac_low`` back too and reconstructs the actual field the
-    same way :meth:`ClusterField._apply_patch` does at interpolation time
-    (2-D-interpolating the parent's already-blended slice onto each
-    child's own grid), rather than plotting a patch's raw data on its own,
-    which would look like a featureless, near-zero patch.
+    Every patch's own on-disk field is already fully blended with its
+    parent's (see :func:`_blend_patches`), so this just draws the root's
+    slice and then each patch's own slice directly on top, in increasing
+    ``level`` order so finer patches land over coarser ones -- no
+    additional blending at plot time.
 
     Parameters
     ----------
@@ -952,52 +1021,31 @@ def plot_field_file(
     """
     import matplotlib.pyplot as plt
     from matplotlib.patches import Rectangle
-    from scipy.interpolate import RegularGridInterpolator
 
     axis_idx = _AXIS_NAMES.index(axis)
     plot_axes = [i for i in range(3) if i != axis_idx]
     axis1_name, axis2_name = _AXIS_NAMES[plot_axes[0]], _AXIS_NAMES[plot_axes[1]]
 
-    root, comps, units = read_field_file(filename)
+    root, patches, comps, units = read_field_file(filename)
     vmax = vmax if vmax is not None else 0.5 * np.max(np.abs(root["g"]))
-
-    def _slice_node(node):
-        coord_arr = node[axis]
-        if coord < coord_arr.min() or coord > coord_arr.max():
-            return None
-        k = int(np.argmin(np.abs(coord_arr - coord)))
-        c1 = node[axis1_name]
-        c2 = node[axis2_name]
-        slab = np.take(node["g"], k, axis=1 + axis_idx)  # (3, n1, n2)
-        window = np.take(node["window"], k, axis=axis_idx) if "window" in node else None
-        return c1, c2, slab, window
 
     def _extent(c1, c2):
         d1, d2 = c1[1] - c1[0], c2[1] - c2[0]
         return (c1[0] - d1 / 2, c1[-1] + d1 / 2, c2[0] - d2 / 2, c2[-1] + d2 / 2)
 
-    def _plot_node(node, parent=None, depth=0):
-        sliced = _slice_node(node)
-        if sliced is None:
+    def _plot_node(node, depth):
+        coord_arr = node[axis]
+        if coord < coord_arr.min() or coord > coord_arr.max():
             return
-        c1, c2, slab, window = sliced
-
-        if parent is not None:
-            p1, p2, ptotal = parent
-            correction = 1.0 - (1.0 - np.sqrt(node["frac_low"])) * window
-            g1, g2 = np.meshgrid(c1, c2, indexing="ij")
-            pts = np.stack([g1.ravel(), g2.ravel()], axis=-1)
-            total = np.empty_like(slab)
-            for i in range(3):
-                interp = RegularGridInterpolator((p1, p2), ptotal[i], bounds_error=False, fill_value=0.0)
-                total[i] = interp(pts).reshape(g1.shape) * correction + slab[i]
-        else:
-            total = slab
+        k = int(np.argmin(np.abs(coord_arr - coord)))
+        c1 = node[axis1_name]
+        c2 = node[axis2_name]
+        slab = np.take(node["g"], k, axis=1 + axis_idx)  # (3, n1, n2)
 
         extent = _extent(c1, c2)
         for i, ax_ in enumerate(axes):
             ax_.imshow(
-                total[i].T, origin="lower", extent=extent, cmap=cmap, vmin=-vmax, vmax=vmax, zorder=depth
+                slab[i].T, origin="lower", extent=extent, cmap=cmap, vmin=-vmax, vmax=vmax, zorder=depth
             )
             if show_grids:
                 ax_.add_patch(
@@ -1012,13 +1060,12 @@ def plot_field_file(
                     )
                 )
 
-        for child in node.get("children", []):
-            _plot_node(child, parent=(c1, c2, total), depth=depth + 1)
-
     if fig is None or axes is None:
         fig, axes = plt.subplots(1, 3, figsize=(15, 5), constrained_layout=True)
 
-    _plot_node(root)
+    _plot_node(root, depth=0)
+    for patch in sorted(patches, key=lambda node: node["level"]):
+        _plot_node(patch, depth=patch["level"])
 
     # Multiple overlaid imshow() extents otherwise leave the view autoscaled
     # to whichever patch was drawn last, not the full (root) domain.
